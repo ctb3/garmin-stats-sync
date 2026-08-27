@@ -1,0 +1,10 @@
+services:
+  sync:
+    build: .
+    image: garmin-stats-sync:latest
+    container_name: garmin-stats-sync
+    env_file: .env
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
+    command: ["loop"]

@@ -1,0 +1,25 @@
+[project]
+name = "garmin-stats-sync"
+version = "0.1.0"
+description = "Sync VeSync smart scale weigh-ins into Garmin Connect"
+requires-python = ">=3.12"
+dependencies = [
+    "pyvesync>=3.0",
+    "garminconnect>=0.2.25",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+garmin-stats-sync = "garmin_stats_sync.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["garmin_stats_sync"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

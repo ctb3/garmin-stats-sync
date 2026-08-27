@@ -1,0 +1,31 @@
+{
+  "traceId": "1756150300",
+  "code": 0,
+  "msg": "request success",
+  "result": {
+    "total": 3,
+    "weightDatas": [
+      {
+        "timestamp": 1756150200,
+        "weightG": 81650,
+        "subUserID": 0,
+        "bodyFat": 0,
+        "impedance": 0
+      },
+      {
+        "timestamp": 1756063800,
+        "weightG": 81920,
+        "subUserID": 0,
+        "bodyFat": 0,
+        "impedance": 0
+      },
+      {
+        "timestamp": 1755977400,
+        "weightG": 82100,
+        "subUserID": 0,
+        "bodyFat": 0,
+        "impedance": 0
+      }
+    ]
+  }
+}
