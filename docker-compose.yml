@@ -19,3 +19,14 @@ services:
       - ./data:/data
     profiles: ["tools"]
     entrypoint: ["python", "/app/scripts/diagnose_weigh_endpoints.py"]
+
+  # Prints session values for exploring the API by hand (Insomnia/curl).
+  #   docker compose run --rm dump-session
+  dump-session:
+    build: .
+    image: garmin-stats-sync:latest
+    env_file: .env
+    volumes:
+      - ./data:/data
+    profiles: ["tools"]
+    entrypoint: ["python", "/app/scripts/dump_session.py"]

@@ -1,0 +1,214 @@
+{
+  "_type": "export",
+  "__export_format": 4,
+  "__export_source": "garmin-stats-sync",
+  "resources": [
+    {
+      "_id": "wrk_vesync_scale",
+      "_type": "workspace",
+      "name": "VeSync scale API",
+      "description": "Unofficial VeSync endpoints for hunting the weigh-in history call. See docs/vesync-api.md."
+    },
+    {
+      "_id": "env_base",
+      "_type": "environment",
+      "parentId": "wrk_vesync_scale",
+      "name": "Base",
+      "data": {
+        "baseUrl": "https://smartapi.vesync.com",
+        "token": "",
+        "accountId": "",
+        "timeZone": "America/New_York",
+        "email": "",
+        "passwordMd5": "",
+        "uuid": "",
+        "configModule": "",
+        "traceId": "1756150300",
+        "terminalId": "29c2f003b88bd5bc7b87c54007dd28851",
+        "appVersion": "5.6.60"
+      },
+      "dataPropertyOrder": {
+        "&": [
+          "baseUrl",
+          "token",
+          "accountId",
+          "timeZone",
+          "email",
+          "passwordMd5",
+          "uuid",
+          "configModule",
+          "traceId",
+          "terminalId",
+          "appVersion"
+        ]
+      }
+    },
+    {
+      "_id": "fld_auth",
+      "_type": "request_group",
+      "parentId": "wrk_vesync_scale",
+      "name": "1. Auth",
+      "metaSortKey": -100
+    },
+    {
+      "_id": "fld_devices",
+      "_type": "request_group",
+      "parentId": "wrk_vesync_scale",
+      "name": "2. Devices",
+      "metaSortKey": -90
+    },
+    {
+      "_id": "fld_weigh",
+      "_type": "request_group",
+      "parentId": "wrk_vesync_scale",
+      "name": "3. Weigh-in hunt",
+      "metaSortKey": -80
+    },
+    {
+      "_id": "req_auth_code",
+      "_type": "request",
+      "parentId": "fld_auth",
+      "name": "Step 1 - authByPWDOrOTM (get authorizeCode)",
+      "method": "POST",
+      "url": "{{ _.baseUrl }}/globalPlatform/api/accountAuth/v1/authByPWDOrOTM",
+      "description": "passwordMd5 is the MD5 hex of your password: printf '%s' 'pw' | md5sum. Copy result.accountID and result.authorizeCode into the environment.",
+      "headers": [
+        { "name": "content-type", "value": "application/json" },
+        { "name": "accept-language", "value": "en" }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"email\": \"{{ _.email }}\",\n  \"method\": \"authByPWDOrOTM\",\n  \"password\": \"{{ _.passwordMd5 }}\",\n  \"acceptLanguage\": \"en\",\n  \"accountID\": \"\",\n  \"authProtocolType\": \"generic\",\n  \"clientInfo\": \"SM N9005\",\n  \"clientType\": \"vesyncApp\",\n  \"clientVersion\": \"VeSync {{ _.appVersion }}\",\n  \"debugMode\": false,\n  \"osInfo\": \"Android\",\n  \"terminalId\": \"{{ _.terminalId }}\",\n  \"timeZone\": \"{{ _.timeZone }}\",\n  \"token\": \"\",\n  \"userCountryCode\": \"US\",\n  \"appID\": \"eldodkfj\",\n  \"sourceAppID\": \"eldodkfj\",\n  \"traceId\": \"{{ _.traceId }}\"\n}"
+      },
+      "metaSortKey": -100
+    },
+    {
+      "_id": "req_login_token",
+      "_type": "request",
+      "parentId": "fld_auth",
+      "name": "Step 2 - loginByAuthorizeCode4Vesync (get token)",
+      "method": "POST",
+      "url": "{{ _.baseUrl }}/user/api/accountManage/v1/loginByAuthorizeCode4Vesync",
+      "description": "Paste the authorizeCode from step 1. Copy result.token into the environment.",
+      "headers": [
+        { "name": "content-type", "value": "application/json" },
+        { "name": "accept-language", "value": "en" }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"method\": \"loginByAuthorizeCode4Vesync\",\n  \"authorizeCode\": \"PASTE_AUTHORIZE_CODE\",\n  \"acceptLanguage\": \"en\",\n  \"accountID\": \"\",\n  \"clientInfo\": \"SM N9005\",\n  \"clientType\": \"vesyncApp\",\n  \"clientVersion\": \"VeSync {{ _.appVersion }}\",\n  \"debugMode\": false,\n  \"emailSubscriptions\": false,\n  \"osInfo\": \"Android\",\n  \"terminalId\": \"{{ _.terminalId }}\",\n  \"timeZone\": \"{{ _.timeZone }}\",\n  \"token\": \"\",\n  \"userCountryCode\": \"US\",\n  \"traceId\": \"{{ _.traceId }}\"\n}"
+      },
+      "metaSortKey": -90
+    },
+    {
+      "_id": "req_device_list",
+      "_type": "request",
+      "parentId": "fld_devices",
+      "name": "Device list (known good)",
+      "method": "POST",
+      "url": "{{ _.baseUrl }}/cloud/v1/deviceManaged/devices",
+      "description": "Returns the scale record. Copy uuid and configModule into the environment.",
+      "headers": [
+        { "name": "content-type", "value": "application/json" },
+        { "name": "accept-language", "value": "en" },
+        { "name": "accountId", "value": "{{ _.accountId }}" },
+        { "name": "tk", "value": "{{ _.token }}" },
+        { "name": "tz", "value": "{{ _.timeZone }}" },
+        { "name": "appVersion", "value": "{{ _.appVersion }}" }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"timeZone\": \"{{ _.timeZone }}\",\n  \"acceptLanguage\": \"en\",\n  \"accountID\": \"{{ _.accountId }}\",\n  \"token\": \"{{ _.token }}\",\n  \"appVersion\": \"{{ _.appVersion }}\",\n  \"phoneBrand\": \"SM N9005\",\n  \"phoneOS\": \"Android\",\n  \"traceId\": \"{{ _.traceId }}\",\n  \"method\": \"devices\",\n  \"pageNo\": \"1\",\n  \"pageSize\": \"100\"\n}"
+      },
+      "metaSortKey": -100
+    },
+    {
+      "_id": "req_fatscale",
+      "_type": "request",
+      "parentId": "fld_weigh",
+      "name": "fatScale/getWeighData - returns -11000079 illegal argument",
+      "method": "POST",
+      "url": "{{ _.baseUrl }}/cloud/v1/deviceManaged/fatScale/getWeighData",
+      "description": "The most promising endpoint: it validates the request rather than blowing up, so a required argument is missing or misnamed. Vary keys here: subUserId vs subUserID, deviceId vs uuid, configModel vs configModule, string vs int pagination, ms vs s timestamps.",
+      "headers": [
+        { "name": "content-type", "value": "application/json" },
+        { "name": "accept-language", "value": "en" },
+        { "name": "accountId", "value": "{{ _.accountId }}" },
+        { "name": "tk", "value": "{{ _.token }}" },
+        { "name": "tz", "value": "{{ _.timeZone }}" },
+        { "name": "appVersion", "value": "{{ _.appVersion }}" }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"timeZone\": \"{{ _.timeZone }}\",\n  \"acceptLanguage\": \"en\",\n  \"accountID\": \"{{ _.accountId }}\",\n  \"token\": \"{{ _.token }}\",\n  \"appVersion\": \"{{ _.appVersion }}\",\n  \"phoneBrand\": \"SM N9005\",\n  \"phoneOS\": \"Android\",\n  \"traceId\": \"{{ _.traceId }}\",\n  \"mobileId\": \"1234567890123456\",\n  \"method\": \"getWeighData\",\n  \"uuid\": \"{{ _.uuid }}\",\n  \"configModule\": \"{{ _.configModule }}\",\n  \"subUserID\": 0,\n  \"page\": 1,\n  \"pageSize\": 10\n}"
+      },
+      "metaSortKey": -100
+    },
+    {
+      "_id": "req_weighing_v2",
+      "_type": "request",
+      "parentId": "fld_weigh",
+      "name": "getWeighingDataV2 - returns -11105079 MySQL error",
+      "method": "POST",
+      "url": "{{ _.baseUrl }}/cloud/v2/deviceManaged/getWeighingDataV2",
+      "description": "The shape from pyvesync PR #108 (written for an ESF24). Server-side query failure on a BT scale, whose cid is null.",
+      "headers": [
+        { "name": "content-type", "value": "application/json" },
+        { "name": "accept-language", "value": "en" },
+        { "name": "accountId", "value": "{{ _.accountId }}" },
+        { "name": "tk", "value": "{{ _.token }}" },
+        { "name": "tz", "value": "{{ _.timeZone }}" },
+        { "name": "appVersion", "value": "{{ _.appVersion }}" }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"timeZone\": \"{{ _.timeZone }}\",\n  \"acceptLanguage\": \"en\",\n  \"accountID\": \"{{ _.accountId }}\",\n  \"token\": \"{{ _.token }}\",\n  \"appVersion\": \"{{ _.appVersion }}\",\n  \"phoneBrand\": \"SM N9005\",\n  \"phoneOS\": \"Android\",\n  \"traceId\": \"{{ _.traceId }}\",\n  \"mobileId\": \"1234567890123456\",\n  \"method\": \"getWeighingDataV2\",\n  \"configModule\": \"{{ _.configModule }}\",\n  \"page\": 1,\n  \"pageSize\": 100,\n  \"allData\": true,\n  \"debugMode\": false\n}"
+      },
+      "metaSortKey": -90
+    },
+    {
+      "_id": "req_bypass_v2",
+      "_type": "request",
+      "parentId": "fld_weigh",
+      "name": "bypassV2 wrapper - returns -11002029 no permission",
+      "method": "POST",
+      "url": "{{ _.baseUrl }}/cloud/v2/deviceManaged/bypassV2",
+      "description": "How pyvesync reaches modern devices. Refused at the device layer, consistent with a BT device that has no cid. Try other payload.method values.",
+      "headers": [
+        { "name": "content-type", "value": "application/json" },
+        { "name": "accept-language", "value": "en" },
+        { "name": "accountId", "value": "{{ _.accountId }}" },
+        { "name": "tk", "value": "{{ _.token }}" },
+        { "name": "tz", "value": "{{ _.timeZone }}" },
+        { "name": "appVersion", "value": "{{ _.appVersion }}" }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"timeZone\": \"{{ _.timeZone }}\",\n  \"acceptLanguage\": \"en\",\n  \"accountID\": \"{{ _.accountId }}\",\n  \"token\": \"{{ _.token }}\",\n  \"appVersion\": \"{{ _.appVersion }}\",\n  \"phoneBrand\": \"SM N9005\",\n  \"phoneOS\": \"Android\",\n  \"traceId\": \"{{ _.traceId }}\",\n  \"deviceRegion\": \"US\",\n  \"method\": \"bypassV2\",\n  \"cid\": \"{{ _.uuid }}\",\n  \"configModule\": \"{{ _.configModule }}\",\n  \"deviceId\": \"{{ _.uuid }}\",\n  \"configModel\": \"{{ _.configModule }}\",\n  \"userCountryCode\": \"US\",\n  \"payload\": {\n    \"method\": \"getWeighingData\",\n    \"source\": \"APP\",\n    \"data\": {\n      \"page\": 1,\n      \"pageSize\": 10,\n      \"subUserID\": 0\n    }\n  }\n}"
+      },
+      "metaSortKey": -80
+    },
+    {
+      "_id": "req_scratch",
+      "_type": "request",
+      "parentId": "fld_weigh",
+      "name": "Scratch - edit path and body freely",
+      "method": "POST",
+      "url": "{{ _.baseUrl }}/cloud/v1/deviceManaged/fatScale/getWeighData",
+      "description": "Duplicate this one per experiment. Watch the code field: a change away from -11000079 means the body moved the needle.",
+      "headers": [
+        { "name": "content-type", "value": "application/json" },
+        { "name": "accept-language", "value": "en" },
+        { "name": "accountId", "value": "{{ _.accountId }}" },
+        { "name": "tk", "value": "{{ _.token }}" },
+        { "name": "tz", "value": "{{ _.timeZone }}" },
+        { "name": "appVersion", "value": "{{ _.appVersion }}" }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"timeZone\": \"{{ _.timeZone }}\",\n  \"acceptLanguage\": \"en\",\n  \"accountID\": \"{{ _.accountId }}\",\n  \"token\": \"{{ _.token }}\",\n  \"appVersion\": \"{{ _.appVersion }}\",\n  \"phoneBrand\": \"SM N9005\",\n  \"phoneOS\": \"Android\",\n  \"traceId\": \"{{ _.traceId }}\",\n  \"mobileId\": \"1234567890123456\",\n  \"method\": \"getWeighData\",\n  \"uuid\": \"{{ _.uuid }}\",\n  \"subUserId\": 0,\n  \"weightUnit\": \"kg\",\n  \"page\": \"1\",\n  \"pageSize\": \"10\"\n}"
+      },
+      "metaSortKey": -70
+    }
+  ]
+}

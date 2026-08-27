@@ -183,6 +183,22 @@ If Garmin tokens expire you'll see `GARMIN REAUTH REQUIRED` in the logs; rerun
 
 ## Troubleshooting
 
+### Exploring the API by hand
+
+`docs/vesync-api.md` documents every endpoint, header and body this project
+uses, the login flow, the error codes seen, and everything already tried for
+weigh-in retrieval.
+
+To poke at it yourself:
+
+```bash
+docker compose run --rm dump-session   # prints token, accountId, uuid, configModule
+```
+
+Import `insomnia/vesync-scale.json` into Insomnia, paste those values into the
+Base environment, and the auth, device-list and weigh-in requests are ready to
+run. The session token is a live credential - keep it out of issues and chats.
+
 ### VeSync returns an error instead of weigh-ins
 
 Run the endpoint search and read the codes:
