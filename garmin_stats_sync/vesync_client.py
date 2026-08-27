@@ -65,14 +65,23 @@ class VeSyncScaleClient:
             return parse_readings(payload)
 
     async def _authenticate(self, manager: VeSync) -> None:
+        """Reuse cached credentials when possible, otherwise log in and cache.
+
+        pyvesync's credential methods are coroutines - awaiting them is not
+        optional, since an un-awaited call is a truthy coroutine object that
+        would leave the session unauthenticated.
+        """
         credentials = self._config.vesync_credentials
-        if credentials.exists() and manager.load_credentials_from_file(credentials):
+        if credentials.exists() and await manager.load_credentials_from_file(
+            credentials
+        ):
             logger.debug("loaded cached VeSync credentials")
             return
+
         if not await manager.login():
             raise VeSyncError("VeSync login failed - check VESYNC_EMAIL/PASSWORD")
         credentials.parent.mkdir(parents=True, exist_ok=True)
-        manager.save_credentials(credentials)
+        await manager.save_credentials(credentials)
 
     async def _find_scale(self, manager: VeSync) -> str:
         if self._config_module:
@@ -102,30 +111,54 @@ class VeSyncScaleClient:
         )
         return self._config_module
 
+    def _weigh_body(self, manager: VeSync, endpoint: str, config_module: str) -> dict:
+        body = Helpers.req_body(manager, "devicedetail")
+        body |= {
+            "page": 1,
+            "pageSize": PAGE_SIZE,
+            "allData": True,
+            "debugMode": False,
+            "method": endpoint.rsplit("/", 1)[-1],
+            "configModule": config_module,
+        }
+        return body
+
     async def _get_weigh_data(
         self, manager: VeSync, config_module: str
     ) -> dict[str, Any]:
-        """Call getWeighingDataV2, falling back to the older fatScale endpoint."""
-        for endpoint in (self._endpoint, LEGACY_WEIGH_DATA_ENDPOINT):
-            body = Helpers.req_body(manager, "devicedetail")
-            body |= {
-                "page": 1,
-                "pageSize": PAGE_SIZE,
-                "allData": True,
-                "debugMode": False,
-                "method": endpoint.rsplit("/", 1)[-1],
-                "configModule": config_module,
-            }
-            response, status = await manager.async_call_api(
-                endpoint, "post", json_object=body
-            )
-            if response and status == 200 and response.get("code") == 0:
+        """Call getWeighingDataV2, falling back to the older fatScale endpoint.
+
+        pyvesync raises on non-zero API codes rather than returning them, so
+        each attempt is guarded - otherwise the first failure escapes and the
+        fallback endpoint is never tried.
+        """
+        endpoints = [self._endpoint]
+        if LEGACY_WEIGH_DATA_ENDPOINT not in endpoints:
+            endpoints.append(LEGACY_WEIGH_DATA_ENDPOINT)
+
+        errors = []
+        for endpoint in endpoints:
+            body = self._weigh_body(manager, endpoint, config_module)
+            try:
+                response, status = await manager.async_call_api(
+                    endpoint,
+                    "post",
+                    json_object=body,
+                    headers=Helpers.req_legacy_headers(manager),
+                )
+            except Exception as exc:
+                logger.warning("%s failed: %s", endpoint, exc)
+                errors.append(f"{endpoint}: {exc}")
+                continue
+
+            if response and status == 200:
                 self._endpoint = endpoint
                 return response
-            logger.warning(
-                "%s returned HTTP %s code %s",
-                endpoint,
-                status,
-                (response or {}).get("code"),
-            )
-        raise VeSyncError("no weigh-in endpoint accepted the request")
+
+            code = (response or {}).get("code")
+            logger.warning("%s returned HTTP %s code %s", endpoint, status, code)
+            errors.append(f"{endpoint}: HTTP {status} code {code}")
+
+        raise VeSyncError(
+            "no weigh-in endpoint accepted the request - " + "; ".join(errors)
+        )

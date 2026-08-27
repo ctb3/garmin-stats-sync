@@ -8,3 +8,14 @@ services:
       - ./data:/data
     restart: unless-stopped
     command: ["loop"]
+
+  # One-shot diagnostic: prints the raw VeSync reply for each endpoint variant.
+  #   docker compose run --rm diagnose
+  diagnose:
+    build: .
+    image: garmin-stats-sync:latest
+    env_file: .env
+    volumes:
+      - ./data:/data
+    profiles: ["tools"]
+    entrypoint: ["python", "/app/scripts/diagnose_weigh_endpoints.py"]

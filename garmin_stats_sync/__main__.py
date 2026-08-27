@@ -89,7 +89,7 @@ def cmd_bootstrap_vesync(config: Config, _args) -> int:
                 logger.error("VeSync login failed")
                 return 1
             config.vesync_credentials.parent.mkdir(parents=True, exist_ok=True)
-            manager.save_credentials(config.vesync_credentials)
+            await manager.save_credentials(config.vesync_credentials)
             logger.info("vesync credentials stored in %s", config.vesync_credentials)
             return 0
 
