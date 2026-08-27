@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
-"""Probe VeSync weigh-in endpoints and print the raw server reply for each.
+"""Search for the VeSync API call that returns this scale's weigh-in history.
 
-pyvesync raises on non-zero API codes, which hides the actual response. This
-posts directly through its authenticated session so every variant's real
-`code`/`msg` is visible, then prints a table of what worked.
+No public client implements weigh-in retrieval for BT scales, so this probes
+candidate endpoints and request bodies and prints the raw server reply for
+each. It posts through pyvesync's authenticated session directly, bypassing the
+library's error-code raising, so every real `code`/`msg` is visible.
 
-    docker compose run --rm sync-diagnose
-    # or, outside Docker:
-    VESYNC_EMAIL=... VESYNC_PASSWORD=... uv run python scripts/diagnose_weigh_endpoints.py
+Read the codes, not just the failures - a *different* error code means a
+different rejection reason, which is the signal worth following:
+
+    -11105079  MySQL error       server-side query failed (wrong endpoint shape)
+    -11000079  illegal argument  endpoint exists, arguments rejected
+    0          success           this is the one
+
+Usage:
+
+    docker compose run --rm diagnose
 """
 
 from __future__ import annotations
@@ -16,20 +24,37 @@ import asyncio
 import json
 import os
 import sys
+from collections import defaultdict
 from datetime import UTC, datetime
 from typing import Any
 
 from pyvesync import VeSync
 from pyvesync.utils.helpers import Helpers
 
-from garmin_stats_sync.vesync_client import (
-    DEVICE_LIST_ENDPOINT,
-    LEGACY_WEIGH_DATA_ENDPOINT,
-    WEIGH_DATA_ENDPOINT,
-    _looks_like_scale,
-)
+from garmin_stats_sync.vesync_client import DEVICE_LIST_ENDPOINT, _looks_like_scale
 
 FALLBACK_BASE_URL = "https://smartapi.vesync.com"
+REQUEST_DELAY_SECONDS = 0.3
+
+SUBUSER_ENDPOINTS = [
+    "/cloud/v1/deviceManaged/fatScale/getSubUserList",
+    "/cloud/v1/deviceManaged/fatScale/getAllSubUser",
+    "/cloud/v1/user/getSubUserList",
+    "/cloud/v2/user/getSubUserList",
+]
+
+WEIGH_ENDPOINTS = [
+    "/cloud/v1/deviceManaged/fatScale/getWeighData",
+    "/cloud/v1/deviceManaged/fatScale/getAllWeighData",
+    "/cloud/v1/deviceManaged/fatScale/getWeighDataV2",
+    "/cloud/v1/deviceManaged/fatScale/getWeighingData",
+    "/cloud/v2/deviceManaged/fatScale/getWeighingDataV2",
+    "/cloud/v2/deviceManaged/getWeighingDataV2",
+    "/cloud/v2/deviceManaged/getWeighingData",
+    "/cloud/v1/deviceManaged/getWeighingData",
+]
+
+BYPASS_METHODS = ["getWeighingData", "getWeighData", "getWeightData", "getBodyData"]
 
 
 def _base_url(manager: VeSync) -> str:
@@ -38,7 +63,6 @@ def _base_url(manager: VeSync) -> str:
 
 
 def _redact(value: Any) -> Any:
-    """Keep tokens out of pasted output."""
     if isinstance(value, dict):
         return {
             key: ("<redacted>" if key.lower() in {"token", "tk"} else _redact(val))
@@ -47,64 +71,138 @@ def _redact(value: Any) -> Any:
     return value
 
 
-async def _post_raw(manager: VeSync, endpoint: str, body: dict, headers: dict) -> dict:
-    """POST without pyvesync's error-code raising, so the reply is visible."""
+async def _post(manager: VeSync, endpoint: str, body: dict) -> dict:
+    """POST without pyvesync's error-code raising."""
     async with manager.session.post(
-        _base_url(manager) + endpoint, json=body, headers=headers
+        _base_url(manager) + endpoint,
+        json=body,
+        headers=Helpers.req_legacy_headers(manager),
     ) as response:
         text = await response.text()
         try:
-            payload = json.loads(text)
+            return json.loads(text)
         except json.JSONDecodeError:
-            payload = {"_unparsed": text[:500]}
-        return {"http": response.status, "payload": payload}
+            return {"code": None, "msg": f"unparsed: {text[:200]}"}
 
 
-def _variants(manager: VeSync, scale: dict) -> list[tuple[str, str, dict]]:
-    """(label, endpoint, body) combinations worth trying."""
-    config_module = scale.get("configModule")
+def _rows(payload: dict) -> list:
+    result = payload.get("result") or {}
+    if not isinstance(result, dict):
+        return []
+    for key in ("weightDatas", "weightData", "weighDatas", "list", "records"):
+        rows = result.get(key)
+        if isinstance(rows, list) and rows:
+            return rows
+    return []
+
+
+def _label(payload: dict) -> str:
+    return f"code={payload.get('code')} msg={payload.get('msg')!r}"
+
+
+def _weigh_bodies(manager: VeSync, scale: dict, sub_user_id: int | None) -> list:
+    """Candidate request bodies, from the most likely shape outward."""
     uuid = scale.get("uuid")
-    cid = scale.get("cid")
+    config_module = scale.get("configModule")
+    now = int(datetime.now(UTC).timestamp())
+    year_ago = now - 365 * 24 * 3600
+    sub_user = 0 if sub_user_id is None else sub_user_id
 
     def base(method: str) -> dict:
         body = Helpers.req_body(manager, "devicedetail")
-        body |= {
-            "page": 1,
-            "pageSize": 10,
-            "allData": True,
-            "debugMode": False,
-            "method": method,
-            "configModule": config_module,
-        }
+        body["method"] = method
         return body
 
-    v2 = "getWeighingDataV2"
-    legacy = "getWeighData"
+    def variants(method: str) -> list[tuple[str, dict]]:
+        return [
+            ("configModule", base(method) | {"configModule": config_module}),
+            ("uuid", base(method) | {"uuid": uuid}),
+            (
+                "uuid+configModule+subUser",
+                base(method)
+                | {
+                    "uuid": uuid,
+                    "configModule": config_module,
+                    "subUserID": sub_user,
+                },
+            ),
+            (
+                "uuid+page",
+                base(method)
+                | {"uuid": uuid, "page": 1, "pageSize": 10, "allData": True},
+            ),
+            (
+                "uuid+timerange",
+                base(method)
+                | {
+                    "uuid": uuid,
+                    "subUserID": sub_user,
+                    "startTime": year_ago,
+                    "endTime": now,
+                    "page": 1,
+                    "pageSize": 10,
+                },
+            ),
+            (
+                "deviceId+configModel",
+                base(method)
+                | {
+                    "deviceId": uuid,
+                    "configModel": config_module,
+                    "subUserID": sub_user,
+                    "page": 1,
+                    "pageSize": 10,
+                },
+            ),
+        ]
 
-    return [
-        ("v2 / configModule only", WEIGH_DATA_ENDPOINT, base(v2)),
-        ("v2 / + subUserID", WEIGH_DATA_ENDPOINT, base(v2) | {"subUserID": 0}),
-        ("v2 / + uuid + cid", WEIGH_DATA_ENDPOINT, base(v2) | {"uuid": uuid, "cid": cid}),
-        (
-            "v2 / + uuid + subUserID",
-            WEIGH_DATA_ENDPOINT,
-            base(v2) | {"uuid": uuid, "subUserID": 0},
-        ),
-        ("legacy fatScale", LEGACY_WEIGH_DATA_ENDPOINT, base(legacy)),
-        (
-            "legacy fatScale / + uuid",
-            LEGACY_WEIGH_DATA_ENDPOINT,
-            base(legacy) | {"uuid": uuid, "subUserID": 0},
-        ),
-    ]
+    candidates = []
+    for endpoint in WEIGH_ENDPOINTS:
+        method = endpoint.rsplit("/", 1)[-1]
+        for name, body in variants(method):
+            candidates.append((f"{endpoint} [{name}]", endpoint, body))
+
+    # bypassV2 is how pyvesync reaches most modern devices.
+    for inner in BYPASS_METHODS:
+        body = Helpers.req_body(manager, "bypassV2")
+        body |= {
+            "cid": scale.get("cid") or uuid,
+            "configModule": config_module,
+            "deviceId": uuid,
+            "configModel": config_module,
+            "userCountryCode": "US",
+            "payload": {
+                "method": inner,
+                "source": "APP",
+                "data": {"page": 1, "pageSize": 10, "subUserID": sub_user},
+            },
+        }
+        candidates.append(
+            (f"bypassV2 [{inner}]", "/cloud/v2/deviceManaged/bypassV2", body)
+        )
+
+    return candidates
 
 
-def _summarise(payload: dict) -> tuple[str, int]:
-    result = payload.get("result") or {}
-    rows = result.get("weightDatas") or result.get("weightData") or []
-    code = payload.get("code")
-    msg = payload.get("msg")
-    return f"code={code} msg={msg!r} rows={len(rows)}", len(rows)
+async def _discover_sub_user(manager: VeSync, scale: dict) -> int | None:
+    print("=== sub-user discovery ===")
+    for endpoint in SUBUSER_ENDPOINTS:
+        body = Helpers.req_body(manager, "devicedetail")
+        body |= {
+            "method": endpoint.rsplit("/", 1)[-1],
+            "uuid": scale.get("uuid"),
+            "configModule": scale.get("configModule"),
+        }
+        payload = await _post(manager, endpoint, body)
+        print(f"{endpoint:55} {_label(payload)}")
+        if payload.get("code") == 0:
+            print(json.dumps(_redact(payload), indent=2)[:1500])
+            rows = _rows(payload)
+            for row in rows:
+                if isinstance(row, dict) and row.get("subUserID") is not None:
+                    return int(row["subUserID"])
+        await asyncio.sleep(REQUEST_DELAY_SECONDS)
+    return None
 
 
 async def main() -> int:
@@ -136,44 +234,49 @@ async def main() -> int:
         scale = scales[0]
         print("=== scale device record ===")
         print(json.dumps(_redact(scale), indent=2))
+        print()
 
-        header_sets = {
-            "none": None,
-            "legacy": Helpers.req_legacy_headers(manager),
-            "bypass": Helpers.req_header_bypass(),
-        }
+        sub_user_id = await _discover_sub_user(manager, scale)
+        print(f"\nsub-user id in use: {sub_user_id if sub_user_id is not None else 0}\n")
 
-        print("\n=== endpoint x header matrix ===")
+        print("=== endpoint / body search ===")
+        by_code: dict[Any, list[str]] = defaultdict(list)
         winners = []
-        for label, endpoint, body in _variants(manager, scale):
-            for header_name, headers in header_sets.items():
-                try:
-                    outcome = await _post_raw(manager, endpoint, body, headers or {})
-                except Exception as exc:  # noqa: BLE001 - diagnostic
-                    print(f"{label:26} headers={header_name:7} EXCEPTION {exc}")
-                    continue
-                summary, rows = _summarise(outcome["payload"])
-                print(
-                    f"{label:26} headers={header_name:7} "
-                    f"http={outcome['http']} {summary}"
-                )
-                if rows:
-                    winners.append((label, header_name, endpoint, outcome["payload"]))
+        for label, endpoint, body in _weigh_bodies(manager, scale, sub_user_id):
+            try:
+                payload = await _post(manager, endpoint, body)
+            except Exception as exc:  # noqa: BLE001 - diagnostic
+                print(f"{label:70} EXCEPTION {exc}")
+                continue
+
+            rows = _rows(payload)
+            print(f"{label:70} {_label(payload)} rows={len(rows)}")
+            by_code[(payload.get("code"), payload.get("msg"))].append(label)
+            if payload.get("code") == 0:
+                winners.append((label, endpoint, body, payload))
+            await asyncio.sleep(REQUEST_DELAY_SECONDS)
+
+        print("\n=== responses grouped by code ===")
+        for (code, msg), labels in sorted(by_code.items(), key=lambda kv: str(kv[0])):
+            print(f"code={code} msg={msg!r}  ({len(labels)} variants)")
+            for label in labels[:3]:
+                print(f"    {label}")
+            if len(labels) > 3:
+                print(f"    ... and {len(labels) - 3} more")
 
         if not winners:
-            print("\nNothing returned rows. Full reply from the first variant:")
-            label, endpoint, body = _variants(manager, scale)[0]
-            outcome = await _post_raw(
-                manager, endpoint, body, Helpers.req_legacy_headers(manager)
-            )
-            print(json.dumps(outcome["payload"], indent=2)[:3000])
+            print("\nNo variant succeeded. Next step is capturing the VeSync app's")
+            print("own request - see the troubleshooting section of the README.")
             return 1
 
-        label, header_name, endpoint, payload = winners[0]
-        print(f"\n=== WORKS: {label} with {header_name} headers on {endpoint} ===")
-        rows = (payload.get("result") or {}).get("weightDatas") or []
-        print(json.dumps(rows[:3], indent=2))
-        for row in rows[:3]:
+        label, endpoint, body, payload = winners[0]
+        print(f"\n=== SUCCESS: {label} ===")
+        print("request body:")
+        print(json.dumps(_redact(body), indent=2))
+        print("response:")
+        print(json.dumps(payload, indent=2)[:3000])
+
+        for row in _rows(payload)[:3]:
             ts = row.get("timestamp")
             grams = row.get("weightG")
             if ts is None or grams is None:
@@ -184,7 +287,6 @@ async def main() -> int:
                 f"  interpreted: {when} UTC  "
                 f"{grams / 1000:.1f} kg / {grams / 453.59237:.1f} lb"
             )
-        print("\nCheck those weights and dates against the VeSync app.")
         return 0
 
 

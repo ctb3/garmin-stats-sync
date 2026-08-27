@@ -151,13 +151,16 @@ class VeSyncScaleClient:
                 errors.append(f"{endpoint}: {exc}")
                 continue
 
-            if response and status == 200:
+            code = (response or {}).get("code")
+            if response and status == 200 and code == 0:
                 self._endpoint = endpoint
                 return response
 
-            code = (response or {}).get("code")
-            logger.warning("%s returned HTTP %s code %s", endpoint, status, code)
-            errors.append(f"{endpoint}: HTTP {status} code {code}")
+            message = (response or {}).get("msg")
+            logger.warning(
+                "%s returned HTTP %s code %s (%s)", endpoint, status, code, message
+            )
+            errors.append(f"{endpoint}: code {code} {message!r}")
 
         raise VeSyncError(
             "no weigh-in endpoint accepted the request - " + "; ".join(errors)

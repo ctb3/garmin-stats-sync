@@ -181,12 +181,58 @@ Delete `state.json` to re-sync from scratch (`--since` controls how far back).
 If Garmin tokens expire you'll see `GARMIN REAUTH REQUIRED` in the logs; rerun
 `bootstrap-garmin`.
 
+## Troubleshooting
+
+### VeSync returns an error instead of weigh-ins
+
+Run the endpoint search and read the codes:
+
+```bash
+docker compose run --rm diagnose
+```
+
+VeSync's codes tell you which wall you hit:
+
+| Code | Meaning |
+|---|---|
+| `0` | success |
+| `-11000079` | illegal argument — the endpoint exists, the body is wrong |
+| `-11105079` | MySQL error — the server-side query failed, usually the wrong endpoint for this device class |
+| `-11102000` | token expired — delete `data/vesync.json` and re-run `bootstrap-vesync` |
+
+BT-only scales (`"connectionType": "BT"`, `"cid": null`) do not answer the same
+endpoints as WiFi devices, and no public VeSync client implements weigh-in
+retrieval for them, so the request shape has to be discovered.
+
+If no variant returns `code=0`, capture what the VeSync app itself sends:
+
+1. Install [mitmproxy](https://mitmproxy.org/) on a machine on your LAN and run `mitmweb`.
+2. On the phone, set that machine as the Wi-Fi HTTP proxy (port 8080) and
+   install the mitm CA certificate from `http://mitm.it`.
+3. Open the VeSync app and view the scale's weight history.
+4. Filter for `smartapi.vesync.com` and find the request whose response
+   contains your weights.
+5. The endpoint path and request body from that flow are the answer — the
+   matching constants live in `garmin_stats_sync/vesync_client.py`.
+
+### Garmin login returns 429
+
+`GarminConnectTooManyRequestsError: IP rate limited` during `bootstrap-garmin`
+is garth retrying; it usually succeeds on the next attempt. Space out repeated
+bootstraps rather than looping them.
+
+### `GARMIN REAUTH REQUIRED` in the logs
+
+The stored OAuth tokens expired (roughly yearly, or after a password change).
+Re-run `docker compose run --rm sync bootstrap-garmin`.
+
 ## Development
 
 ```bash
 uv sync --extra dev
 uv run pytest
-uv run python scripts/probe_vesync.py   # dump raw VeSync responses
+uv run python scripts/probe_vesync.py              # dump raw VeSync responses
+uv run python scripts/diagnose_weigh_endpoints.py  # search for the weigh-in endpoint
 ```
 
 Tests are offline and run against recorded payloads in `tests/fixtures/`.

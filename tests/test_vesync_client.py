@@ -147,6 +147,24 @@ async def test_weigh_data_sends_legacy_headers(config, weigh_data_payload):
 
 
 @pytest.mark.asyncio
+async def test_nonzero_api_code_is_not_success(config):
+    """HTTP 200 with code != 0 is a VeSync error, not an empty result."""
+    manager = FakeManager(
+        responses={
+            WEIGH_DATA_ENDPOINT: {"code": -11105079, "msg": "MySQL error"},
+            LEGACY_WEIGH_DATA_ENDPOINT: {"code": -11000079, "msg": "illegal argument"},
+        }
+    )
+    client = VeSyncScaleClient(config)
+
+    with pytest.raises(VeSyncError) as excinfo:
+        await client._get_weigh_data(manager, "cfg-module")
+
+    assert "illegal argument" in str(excinfo.value)
+    assert "MySQL error" in str(excinfo.value)
+
+
+@pytest.mark.asyncio
 async def test_weigh_data_raises_when_every_endpoint_fails(config):
     manager = FakeManager(
         responses={
