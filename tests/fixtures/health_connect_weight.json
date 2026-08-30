@@ -1,0 +1,41 @@
+{
+  "pageToken": null,
+  "records": [
+    {
+      "metadata": {
+        "clientRecordId": null,
+        "clientRecordVersion": 0,
+        "dataOrigin": {"packageName": "com.etekcity.vesyncplatform"},
+        "device": null,
+        "id": "hc-record-0003",
+        "lastModifiedTime": 1756150260000,
+        "recordingMethod": 3
+      },
+      "time": 1756150200000,
+      "zoneOffset": null,
+      "weight": {"kilograms": 82.1, "pounds": 181.0}
+    },
+    {
+      "metadata": {
+        "dataOrigin": {"packageName": "com.etekcity.vesyncplatform"},
+        "id": "hc-record-0002",
+        "lastModifiedTime": 1756063860000,
+        "recordingMethod": 3
+      },
+      "time": 1756063800000,
+      "zoneOffset": null,
+      "weight": {"kilograms": 81.92, "pounds": 180.6}
+    },
+    {
+      "metadata": {
+        "dataOrigin": {"packageName": "com.etekcity.vesyncplatform"},
+        "id": "hc-record-0001",
+        "lastModifiedTime": 1755977460000,
+        "recordingMethod": 3
+      },
+      "time": 1755977400000,
+      "zoneOffset": null,
+      "weight": {"kilograms": 81.65, "pounds": 180.0}
+    }
+  ]
+}

@@ -60,7 +60,7 @@ def default_since(state: State, now: datetime, cold_start_days: int) -> datetime
 
 
 def run_once(
-    vesync,
+    source,
     garmin,
     state: State,
     since: datetime,
@@ -69,7 +69,7 @@ def run_once(
 ) -> SyncResult:
     """Fetch weigh-ins, upload the new ones, record only what succeeded."""
     now = now or datetime.now(UTC)
-    readings: list[Reading] = vesync.fetch_readings()
+    readings: list[Reading] = source.fetch_readings()
 
     uploaded = skipped = failed = 0
     for reading in readings:
@@ -82,10 +82,9 @@ def run_once(
 
         if dry_run:
             logger.info(
-                "DRY RUN would upload %.1f kg taken %s (subUser %s)",
+                "DRY RUN would upload %.1f kg taken %s",
                 reading.weight_kg,
                 reading.taken_at.isoformat(),
-                reading.sub_user_id,
             )
             uploaded += 1
             continue

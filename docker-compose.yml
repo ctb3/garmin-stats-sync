@@ -6,27 +6,29 @@ services:
     env_file: .env
     volumes:
       - ./data:/data
+    # Loopback only: the reverse proxy connects locally and terminates TLS.
+    # Binding 0.0.0.0 here would publish on every host interface, and Docker's
+    # iptables DOCKER chain DNATs *before* ufw/firewalld - so a host firewall
+    # you believe blocks 8080 would not.
+    ports:
+      - "127.0.0.1:${INGEST_PORT:-8080}:8080"
     restart: unless-stopped
+    # SIGTERM breaks the sync loop out of its wait, so shutdown is prompt and
+    # in-flight requests finish rather than being severed.
+    stop_grace_period: 15s
+    healthcheck:
+      # python, not curl: python:3.12-slim has no curl, and a healthcheck that
+      # always fails is worse than none.
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import sys, urllib.request
+          with urllib.request.urlopen("http://127.0.0.1:8080/health", timeout=3) as r:
+              sys.exit(0 if r.status == 200 else 1)
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     command: ["loop"]
-
-  # One-shot diagnostic: prints the raw VeSync reply for each endpoint variant.
-  #   docker compose run --rm diagnose
-  diagnose:
-    build: .
-    image: garmin-stats-sync:latest
-    env_file: .env
-    volumes:
-      - ./data:/data
-    profiles: ["tools"]
-    entrypoint: ["python", "/app/scripts/diagnose_weigh_endpoints.py"]
-
-  # Prints session values for exploring the API by hand (Insomnia/curl).
-  #   docker compose run --rm dump-session
-  dump-session:
-    build: .
-    image: garmin-stats-sync:latest
-    env_file: .env
-    volumes:
-      - ./data:/data
-    profiles: ["tools"]
-    entrypoint: ["python", "/app/scripts/dump_session.py"]

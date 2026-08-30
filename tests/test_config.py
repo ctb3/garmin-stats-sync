@@ -7,10 +7,9 @@ import pytest
 from garmin_stats_sync.config import ConfigError, load_config
 
 REQUIRED = {
-    "VESYNC_EMAIL": "scale@example.com",
-    "VESYNC_PASSWORD": "vesync-secret",
     "GARMIN_EMAIL": "runner@example.com",
     "GARMIN_PASSWORD": "garmin-secret",
+    "INGEST_TOKEN": "x" * 32,
 }
 
 
@@ -27,13 +26,41 @@ def env(monkeypatch):
 def test_paths_derive_from_data_dir(env):
     config = load_config()
     assert config.garth_dir.as_posix() == "/data/garth"
-    assert config.vesync_credentials.as_posix() == "/data/vesync.json"
+    assert config.inbox_dir.as_posix() == "/data/inbox"
+    assert config.runlog_file.as_posix() == "/data/runlog.jsonl"
     assert config.state_file.as_posix() == "/data/state.json"
 
 
-def test_missing_credential_fails_fast(env):
+def test_garmin_credentials_are_optional(env):
+    """Without them the service runs on cached tokens and the /login page."""
+    env.delenv("GARMIN_EMAIL")
     env.delenv("GARMIN_PASSWORD")
-    with pytest.raises(ConfigError, match="GARMIN_PASSWORD"):
+
+    config = load_config()
+
+    assert config.garmin_email == ""
+    assert config.has_stored_credentials is False
+
+
+def test_stored_credentials_are_detected(env):
+    assert load_config().has_stored_credentials is True
+
+
+def test_missing_ingest_token_fails_fast(env):
+    env.delenv("INGEST_TOKEN")
+    with pytest.raises(ConfigError, match="INGEST_TOKEN"):
+        load_config()
+
+
+def test_short_ingest_token_fails_fast(env):
+    env.setenv("INGEST_TOKEN", "tooshort")
+    with pytest.raises(ConfigError, match="at least 32 characters"):
+        load_config()
+
+
+def test_non_numeric_interval_is_a_config_error(env):
+    env.setenv("SYNC_INTERVAL_SECONDS", "half an hour")
+    with pytest.raises(ConfigError, match="SYNC_INTERVAL_SECONDS"):
         load_config()
 
 
