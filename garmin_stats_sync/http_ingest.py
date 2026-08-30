@@ -3,11 +3,17 @@
 Standard library only. A handful of routes does not justify a web framework in a
 container that installs from pyproject.toml without a lockfile.
 
-Access control is deliberately thin. The status page shows weight history, so the
-host belongs behind Basic auth on the reverse proxy - that is the real control,
-and it is one htpasswd line. What lives here is the token on /weigh-ins (the
-phone cannot do interactive Basic auth), a CSRF token on the login form, and
-no-store on the pages that render data.
+Access control is deliberately thin, and intentionally so: this runs on a home
+LAN behind a reverse proxy that exists for a friendly hostname, not for auth.
+
+The one credential is INGEST_TOKEN on /weigh-ins, because that path has
+consequences outside the network - it writes to a real Garmin account. The pages
+are readable by anything that can reach the host, which is the accepted trade;
+deployments that want them protected put Basic auth on the proxy and leave
+/weigh-ins exempt, since the app authenticates with the token instead.
+
+The rest is cheap hygiene: a CSRF token on the login form and no-store on the
+pages that render data.
 """
 
 from __future__ import annotations

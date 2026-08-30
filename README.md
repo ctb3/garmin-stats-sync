@@ -16,7 +16,7 @@ scale --BLE--> VeSync app --> Health Connect
               (Android app, WorkManager 30m, unmetered, battery-not-low)
                                    |  POST /weigh-ins  + X-Auth-Token
                                    v      https://garmin-sync.example.net
-                          reverse proxy (TLS, Basic auth)
+                          reverse proxy (TLS)          
                                    |
                         receiver thread --> spool /data/inbox/*.json
                                                      |
@@ -76,35 +76,38 @@ docker compose up -d
 web page instead — Garmin sessions last about a year, so you will be prompted again
 only when they expire, and no password is ever stored.
 
-### 2. The reverse proxy
+### 2. The reverse proxy (optional)
 
-The container publishes to **loopback only**. Point your proxy at `127.0.0.1:8080`,
-terminate TLS there, and put Basic auth in front of the whole host.
-
-Basic auth matters: the status page shows your weight history. That is the real
-access control, and it is one htpasswd line. Configure `/weigh-ins` to **bypass**
-Basic auth — the phone authenticates with its own token header instead.
+The container publishes to **loopback only**, so a proxy is how you reach it from
+the phone. A plain pass-through is all it needs:
 
 ```nginx
 server {
     server_name garmin-sync.example.net;
     # Public-CA certificate (e.g. Let's Encrypt DNS-01) so the phone's system
-    # trust store covers it; no custom trust anchor in the app.
+    # trust store covers it - no custom trust anchor, no cleartext exception.
 
-    location /weigh-ins {
-        proxy_pass http://127.0.0.1:8080;
-    }
     location / {
-        auth_basic "garmin-sync";
-        auth_basic_user_file /etc/nginx/garmin-sync.htpasswd;
         proxy_pass http://127.0.0.1:8080;
     }
 }
 ```
 
-> **Do not** publish port 8080 on a LAN interface as a shortcut. Docker's iptables
-> `DOCKER` chain DNATs *before* `ufw`/`firewalld`, so a host firewall you believe is
-> blocking 8080 will not block it.
+**What this leaves open.** With no auth at the proxy, anything on your network can
+read the status page — which shows your weigh-in history — and see the login form.
+On a home LAN that is usually a fine trade for not maintaining an htpasswd file.
+
+`INGEST_TOKEN` is then the only credential in the system, and it guards the one
+thing with consequences outside your network: writes to your Garmin account.
+Without it, any device on the LAN could inject weigh-ins into your history.
+
+If you later want the pages protected too, add Basic auth on `location /` and give
+`/weigh-ins` its own `location` block without it — the app authenticates with the
+token, not with Basic auth.
+
+> **Do not** publish port 8080 on a LAN interface instead of proxying. Docker's
+> iptables `DOCKER` chain DNATs *before* `ufw`/`firewalld`, so a host firewall you
+> believe is blocking 8080 will not block it.
 
 ### 3. Log in to Garmin
 
@@ -129,8 +132,8 @@ Grant only Weight. The app requests nothing else.
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | `POST` | `/weigh-ins` | `X-Auth-Token` header | Ingest from the phone |
-| `GET` | `/` | proxy Basic auth | Status: recent runs, pending spool, token state |
-| `GET`/`POST` | `/login` | proxy Basic auth | Garmin login and MFA |
+| `GET` | `/` | whatever the proxy enforces | Status: recent runs, pending spool, token state |
+| `GET`/`POST` | `/login` | whatever the proxy enforces | Garmin login and MFA |
 | `GET`/`HEAD` | `/health` | none | JSON for external monitoring |
 
 The token is accepted **only** as a header — never a query string or cookie — so a
