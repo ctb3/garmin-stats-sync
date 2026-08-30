@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 import urllib.error
 import urllib.request
@@ -275,3 +276,26 @@ def test_status_page_sets_no_store(server):
     with urllib.request.urlopen(f"{base}/", timeout=5) as response:
         assert response.headers["Cache-Control"] == "no-store"
         assert response.headers["X-Content-Type-Options"] == "nosniff"
+
+
+def test_successful_login_wakes_the_sync_loop(server, monkeypatch):
+    """Logging in is the moment a stuck spool becomes deliverable."""
+    from garmin_stats_sync import http_ingest
+
+    app, base = server
+    monkeypatch.setattr(
+        http_ingest.garmin_auth, "begin_login", lambda *_args: None
+    )
+    csrf = re.search(rb'name=csrf value="([^"]+)"', _get(f"{base}/login")[1]).group(1)
+    app.wake.clear()
+
+    status, body = _post(
+        f"{base}/login",
+        b"csrf=" + csrf + b"&email=a%40b.com&password=secret",
+        {"Content-Type": "application/x-www-form-urlencoded"},
+        raw=True,
+    )
+
+    assert status == 200
+    assert b"Logged in" in body
+    assert app.wake.is_set()

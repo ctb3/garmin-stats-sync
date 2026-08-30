@@ -214,6 +214,7 @@ class IngestHandler(BaseHTTPRequestHandler):
                 garmin_auth.submit_mfa(
                     self.app.config, form.get("session_id", ""), form["mfa_code"]
                 )
+                self.app.on_login()
                 self._html(HTTPStatus.OK, self.app.login_done())
                 return
             session_id = garmin_auth.begin_login(
@@ -226,6 +227,7 @@ class IngestHandler(BaseHTTPRequestHandler):
             return
 
         if session_id is None:
+            self.app.on_login()
             self._html(HTTPStatus.OK, self.app.login_done())
         else:
             self._html(HTTPStatus.OK, self.app.mfa_page(_issue_csrf(), session_id))
@@ -264,6 +266,15 @@ class App:
             logger.info("accepted %s weigh-in(s) from the phone", accepted)
             self.wake.set()
         return accepted, rejected
+
+    def on_login(self) -> None:
+        """Drain the spool now that we can talk to Garmin again.
+
+        You log in precisely when deliveries are stuck, so waiting out the sync
+        interval is the wrong behaviour at exactly the wrong moment.
+        """
+        logger.info("garmin login succeeded, running a sync cycle now")
+        self.wake.set()
 
     # --- views --------------------------------------------------------------
 
@@ -379,8 +390,8 @@ class App:
 
     def login_done(self) -> str:
         body = (
-            '<h1 class=good>Logged in</h1><p>Tokens stored. Anything waiting in the '
-            'spool uploads on the next cycle.</p><p><a href="/">back to status</a></p>'
+            '<h1 class=good>Logged in</h1><p>Tokens stored. Anything waiting in '
+            'the spool is uploading now.</p><p><a href="/">back to status</a></p>'
         )
         return self._page("Logged in", body)
 

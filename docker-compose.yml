@@ -10,8 +10,11 @@ services:
     # Binding 0.0.0.0 here would publish on every host interface, and Docker's
     # iptables DOCKER chain DNATs *before* ufw/firewalld - so a host firewall
     # you believe blocks 8080 would not.
+    # HOST_PORT is the published port only. The app always listens on 8080
+    # inside the container - do not reuse INGEST_PORT here, or changing it to
+    # dodge a host conflict would move the listener out from under the mapping.
     ports:
-      - "127.0.0.1:${INGEST_PORT:-8080}:8080"
+      - "127.0.0.1:${HOST_PORT:-8080}:8080"
     restart: unless-stopped
     # SIGTERM breaks the sync loop out of its wait, so shutdown is prompt and
     # in-flight requests finish rather than being severed.
