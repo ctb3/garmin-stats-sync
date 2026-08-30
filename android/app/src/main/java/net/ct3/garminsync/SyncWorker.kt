@@ -1,0 +1,196 @@
+package net.ct3.garminsync
+
+import android.content.Context
+import android.util.Log
+import androidx.health.connect.client.HealthConnectClient
+import androidx.health.connect.client.permission.HealthPermission
+import androidx.health.connect.client.records.WeightRecord
+import androidx.health.connect.client.request.ReadRecordsRequest
+import androidx.health.connect.client.time.TimeRangeFilter
+import androidx.work.BackoffPolicy
+import androidx.work.Constraints
+import androidx.work.CoroutineWorker
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.WorkerParameters
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
+import java.time.Duration
+import java.time.Instant
+
+/**
+ * Reads new weigh-ins from Health Connect and posts them to the server.
+ *
+ * Power shape: the expensive thing would be waking the radio. Almost every run
+ * has nothing new, and those runs return before touching the network - so a
+ * 30-minute period costs a process wake and one Health Connect IPC read, not a
+ * connection. Android 15+ background reads mean no foreground service is needed
+ * at all, which is the real saving.
+ */
+class SyncWorker(context: Context, params: WorkerParameters) :
+    CoroutineWorker(context, params) {
+
+    override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
+        val settings = Settings(applicationContext)
+        if (!settings.isConfigured) {
+            return@withContext Result.success()
+        }
+
+        if (HealthConnectClient.getSdkStatus(applicationContext) !=
+            HealthConnectClient.SDK_AVAILABLE
+        ) {
+            settings.lastResult = "Health Connect unavailable"
+            return@withContext Result.success()
+        }
+
+        try {
+            val client = HealthConnectClient.getOrCreate(applicationContext)
+
+            // One read covers both jobs: deciding whether anything is new, and
+            // supplying the batch to send.
+            val window = readWindow(client)
+            val newest = window.maxOfOrNull { it.time.toEpochMilli() } ?: 0L
+            if (newest <= settings.lastConfirmedMillis) {
+                // The short-circuit that keeps polling cheap: no radio, no
+                // connection, nothing to report. This is the path ~47 of 48
+                // daily runs take.
+                return@withContext Result.success()
+            }
+
+            // Send the whole window rather than only what is new. The server
+            // dedupes by timestamp, so over-sending costs nothing and repairs
+            // the pipeline if either side ever loses its place.
+            post(settings, window)
+
+            settings.lastConfirmedMillis = newest
+            settings.consecutiveFailures = 0
+            settings.lastResult = "Sent ${window.size} record(s) at ${Instant.now()}"
+            Notifications.clear(applicationContext)
+            Result.success()
+        } catch (e: Exception) {
+            val failures = settings.consecutiveFailures + 1
+            settings.consecutiveFailures = failures
+            settings.lastResult = "Failed: ${e.message}"
+            Log.w(TAG, "sync failed (attempt $failures)", e)
+            if (failures >= FAILURES_BEFORE_NOTIFYING) {
+                Notifications.syncFailing(applicationContext, e.message.orEmpty())
+            }
+            // WorkManager applies exponential backoff; the high-water mark has
+            // not moved, so nothing is lost.
+            Result.retry()
+        }
+    }
+
+    private suspend fun readWindow(client: HealthConnectClient): List<WeightRecord> =
+        read(client, TimeRangeFilter.after(Instant.now().minus(WINDOW)))
+
+    private suspend fun read(
+        client: HealthConnectClient,
+        filter: TimeRangeFilter,
+    ): List<WeightRecord> {
+        val response = client.readRecords(
+            ReadRecordsRequest(recordType = WeightRecord::class, timeRangeFilter = filter)
+        )
+        // Garmin Connect writes weight *into* Health Connect. Without this
+        // filter the app would read Garmin's own records and upload them back
+        // to Garmin.
+        return response.records.filter {
+            it.metadata.dataOrigin.packageName != GARMIN_PACKAGE
+        }
+    }
+
+    private fun post(settings: Settings, records: List<WeightRecord>) {
+        val body = JSONObject().put(
+            "records",
+            JSONArray().apply {
+                records.forEach { record ->
+                    put(
+                        JSONObject()
+                            .put(
+                                "metadata",
+                                JSONObject()
+                                    .put("id", record.metadata.id)
+                                    .put(
+                                        "dataOrigin",
+                                        JSONObject().put(
+                                            "packageName",
+                                            record.metadata.dataOrigin.packageName,
+                                        ),
+                                    ),
+                            )
+                            .put("time", record.time.toEpochMilli())
+                            .put(
+                                "weight",
+                                JSONObject().put("kilograms", record.weight.inKilograms),
+                            )
+                    )
+                }
+            },
+        ).toString()
+
+        val connection =
+            URL("${settings.serverUrl}$INGEST_PATH").openConnection() as HttpURLConnection
+        connection.apply {
+            requestMethod = "POST"
+            doOutput = true
+            connectTimeout = 15_000
+            readTimeout = 15_000
+            setRequestProperty("Content-Type", "application/json")
+            setRequestProperty("X-Auth-Token", settings.token)
+        }
+        try {
+            connection.outputStream.use { it.write(body.toByteArray()) }
+            val code = connection.responseCode
+            if (code !in 200..299) {
+                val detail = connection.errorStream?.bufferedReader()?.readText().orEmpty()
+                throw IllegalStateException("server returned $code $detail".trim())
+            }
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    companion object {
+        private const val TAG = "SyncWorker"
+        private const val WORK_NAME = "garmin-sync-periodic"
+        private const val INGEST_PATH = "/weigh-ins"
+        private const val GARMIN_PACKAGE = "com.garmin.android.apps.connectmobile"
+        private const val FAILURES_BEFORE_NOTIFYING = 3
+
+        private val WINDOW: Duration = Duration.ofDays(7)
+        private val PERIOD: Duration = Duration.ofMinutes(30)
+        // Lets JobScheduler place the run inside a window it is already waking
+        // for, rather than forcing a wake of its own.
+        private val FLEX: Duration = Duration.ofMinutes(10)
+
+        val PERMISSIONS = setOf(
+            HealthPermission.getReadPermission(WeightRecord::class),
+            HealthPermission.PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND,
+        )
+
+        fun schedule(context: Context) {
+            val constraints = Constraints.Builder()
+                // Unmetered also enforces the home-WiFi-only assumption.
+                .setRequiredNetworkType(NetworkType.UNMETERED)
+                .setRequiresBatteryNotLow(true)
+                .build()
+
+            val request = PeriodicWorkRequestBuilder<SyncWorker>(PERIOD, FLEX)
+                .setConstraints(constraints)
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, Duration.ofMinutes(5))
+                .build()
+
+            WorkManager.getInstance(context).enqueueUniquePeriodicWork(
+                WORK_NAME,
+                ExistingPeriodicWorkPolicy.UPDATE,
+                request,
+            )
+        }
+    }
+}

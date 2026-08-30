@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Garmin Sync</string>
+    <string name="server_label">Server address</string>
+    <string name="token_label">Ingest token</string>
+    <string name="save_and_grant">Save and grant permissions</string>
+    <string name="sync_now">Sync now</string>
+</resources>

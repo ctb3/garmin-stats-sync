@@ -88,5 +88,5 @@ def entry_from_result(result, trigger: str, error: str | None = None) -> RunEntr
         skipped=result.skipped,
         failed=result.failed,
         fetched=result.fetched,
-        error=error,
+        error=error or result.last_error,
     )

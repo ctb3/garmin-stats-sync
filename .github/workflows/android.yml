@@ -1,0 +1,38 @@
+name: Android APK
+
+# There is no local Android toolchain, by design: the APK is built here and
+# sideloaded. Sideloading also means no Play listing, so no Health Connect
+# declaration form and no privacy policy.
+on:
+  push:
+    paths:
+      - "android/**"
+      - ".github/workflows/android.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # No wrapper is committed (there is no local toolchain to generate one),
+      # so pin the Gradle version explicitly here.
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      - name: Build debug APK
+        working-directory: android
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: garmin-sync-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error

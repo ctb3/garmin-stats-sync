@@ -21,6 +21,10 @@ class SyncResult:
     skipped: int = 0
     failed: int = 0
     fetched: int = 0
+    # Why the last failure happened, for the status page. Garmin's errors are
+    # often actionable ("upload consent is not yet granted"), and a bare count
+    # sends you to the container logs to find that out.
+    last_error: str | None = None
 
     def summary(self) -> str:
         return (
@@ -72,6 +76,7 @@ def run_once(
     readings: list[Reading] = source.fetch_readings()
 
     uploaded = skipped = failed = 0
+    last_error: str | None = None
     for reading in readings:
         if reading.taken_at < since:
             skipped += 1
@@ -91,11 +96,12 @@ def run_once(
 
         try:
             garmin.upload_weight(reading)
-        except Exception:
+        except Exception as exc:
             logger.exception(
                 "upload failed for weigh-in at %s, will retry next run",
                 reading.taken_at.isoformat(),
             )
+            last_error = str(exc)
             failed += 1
             continue
 
@@ -109,5 +115,9 @@ def run_once(
         state.save()
 
     return SyncResult(
-        uploaded=uploaded, skipped=skipped, failed=failed, fetched=len(readings)
+        uploaded=uploaded,
+        skipped=skipped,
+        failed=failed,
+        fetched=len(readings),
+        last_error=last_error,
     )

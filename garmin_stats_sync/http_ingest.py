@@ -307,13 +307,14 @@ class App:
         state = garmin_auth.token_state(self.config)
         pending = self.inbox.pending()
         rows = "".join(
-            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>".format(
+            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td>"
+            "<td>{}</td></tr>".format(
                 html.escape(e.at),
                 html.escape(e.trigger),
                 e.uploaded,
                 e.skipped,
                 f'<span class="bad">{e.failed}</span>' if e.failed else "0",
-
+                html.escape(e.error or ""),
             )
             for e in reversed(self.runlog.recent(25))
         )
@@ -340,7 +341,7 @@ class App:
             + "<h2>Recent runs</h2>"
             + (
                 "<table><tr><th>When</th><th>Trigger</th><th>Up</th>"
-                f"<th>Skip</th><th>Fail</th></tr>{rows}</table>"
+                f"<th>Skip</th><th>Fail</th><th>Error</th></tr>{rows}</table>"
                 if rows
                 else "<p>No runs recorded yet.</p>"
             )
