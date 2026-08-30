@@ -17,8 +17,6 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.json.JSONArray
-import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.time.Duration
@@ -54,8 +52,8 @@ class SyncWorker(context: Context, params: WorkerParameters) :
 
             // One read covers both jobs: deciding whether anything is new, and
             // supplying the batch to send.
-            val window = readWindow(client)
-            val newest = window.maxOfOrNull { it.time.toEpochMilli() } ?: 0L
+            val window = toWeighIns(readWindow(client))
+            val newest = window.maxOfOrNull { it.epochMillis } ?: 0L
             if (newest <= settings.lastConfirmedMillis) {
                 // The short-circuit that keeps polling cheap: no radio, no
                 // connection, nothing to report. This is the path ~47 of 48
@@ -97,42 +95,24 @@ class SyncWorker(context: Context, params: WorkerParameters) :
         val response = client.readRecords(
             ReadRecordsRequest(recordType = WeightRecord::class, timeRangeFilter = filter)
         )
-        // Garmin Connect writes weight *into* Health Connect. Without this
-        // filter the app would read Garmin's own records and upload them back
-        // to Garmin.
-        return response.records.filter {
-            it.metadata.dataOrigin.packageName != GARMIN_PACKAGE
-        }
+        return response.records
     }
 
-    private fun post(settings: Settings, records: List<WeightRecord>) {
-        val body = JSONObject().put(
-            "records",
-            JSONArray().apply {
-                records.forEach { record ->
-                    put(
-                        JSONObject()
-                            .put(
-                                "metadata",
-                                JSONObject()
-                                    .put("id", record.metadata.id)
-                                    .put(
-                                        "dataOrigin",
-                                        JSONObject().put(
-                                            "packageName",
-                                            record.metadata.dataOrigin.packageName,
-                                        ),
-                                    ),
-                            )
-                            .put("time", record.time.toEpochMilli())
-                            .put(
-                                "weight",
-                                JSONObject().put("kilograms", record.weight.inKilograms),
-                            )
-                    )
-                }
-            },
-        ).toString()
+    /** Health Connect types stop here; everything downstream is plain data. */
+    private fun toWeighIns(records: List<WeightRecord>): List<WeighIn> =
+        Payload.excludeGarminOrigin(
+            records.map {
+                WeighIn(
+                    id = it.metadata.id,
+                    packageName = it.metadata.dataOrigin.packageName,
+                    epochMillis = it.time.toEpochMilli(),
+                    kilograms = it.weight.inKilograms,
+                )
+            }
+        )
+
+    private fun post(settings: Settings, records: List<WeighIn>) {
+        val body = Payload.build(records)
 
         val connection =
             URL("${settings.serverUrl}$INGEST_PATH").openConnection() as HttpURLConnection
@@ -160,7 +140,6 @@ class SyncWorker(context: Context, params: WorkerParameters) :
         private const val TAG = "SyncWorker"
         private const val WORK_NAME = "garmin-sync-periodic"
         private const val INGEST_PATH = "/weigh-ins"
-        private const val GARMIN_PACKAGE = "com.garmin.android.apps.connectmobile"
         private const val FAILURES_BEFORE_NOTIFYING = 3
 
         private val WINDOW: Duration = Duration.ofDays(7)

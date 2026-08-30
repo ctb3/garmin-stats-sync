@@ -27,9 +27,22 @@ jobs:
         with:
           gradle-version: "8.11.1"
 
+      # Unit tests first: they cover the wire contract with the server and run
+      # on a plain JVM, so a mismatch fails here rather than on a phone.
+      - name: Unit tests
+        working-directory: android
+        run: gradle testDebugUnitTest --no-daemon --stacktrace
+
       - name: Build debug APK
         working-directory: android
         run: gradle assembleDebug --no-daemon --stacktrace
+
+      - name: Upload test report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-report
+          path: android/app/build/reports/tests/
 
       - uses: actions/upload-artifact@v4
         with:

@@ -5,14 +5,14 @@ plugins {
 
 android {
     namespace = "net.ct3.garminsync"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "net.ct3.garminsync"
         // Health Connect background reads need Android 15+; the app still
         // installs below that and simply syncs while it is open.
         minSdk = 30
-        targetSdk = 35
+        targetSdk = 36
         versionCode = 1
         versionName = "1.0"
     }
@@ -32,6 +32,12 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+
+    testOptions {
+        unitTests {
+            isReturnDefaultValues = true
+        }
+    }
 }
 
 dependencies {
@@ -41,4 +47,9 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.10.0")
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+
+    // org.json ships in android.jar as stubs only, so unit tests need the real
+    // implementation to exercise the wire format on a plain JVM.
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }
