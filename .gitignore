@@ -9,3 +9,4 @@ local.properties
 android/build/
 android/app/build/
 .gradle/
+android/.kotlin/
