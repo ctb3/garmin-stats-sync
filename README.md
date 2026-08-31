@@ -156,17 +156,22 @@ Two things that matter:
 Leave `GARMIN_EMAIL`/`GARMIN_PASSWORD` blank unless you want unattended
 re-login; the `/login` page covers it and stores no password.
 
-The phone has to reach the container, so publish beyond loopback. In `.env`:
+`BIND_ADDR` is the **host-side interface** the container publishes on. It
+defaults to `127.0.0.1`, which is reachable only from inside the LXC — so set it
+to the LXC's own address whenever anything else has to connect:
 
 ```bash
-BIND_ADDR=0.0.0.0
+BIND_ADDR=192.168.1.25     # this LXC's LAN address
 HOST_PORT=8080
 ```
 
-Use the LXC's own LAN address instead of `0.0.0.0` if it has more than one
-interface. Note that Docker's iptables `DOCKER` chain DNATs *before*
-`ufw`/`firewalld`, so a host firewall you believe is blocking this port will
-not block it — treat publishing as the exposure decision it is.
+Leave the default only if your reverse proxy runs **on this same LXC**; then it
+connects over loopback and nothing is published to the network at all.
+
+`0.0.0.0` also works and means "every interface", but naming the address is
+worth the few extra characters. Either way, publishing beyond loopback is an
+exposure decision: Docker's iptables `DOCKER` chain DNATs *before*
+`ufw`/`firewalld`, so a host firewall you believe blocks this port will not.
 
 ### 5. Build and start
 
