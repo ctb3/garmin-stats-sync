@@ -64,7 +64,14 @@ class SyncWorker(context: Context, params: WorkerParameters) :
             // Send the whole window rather than only what is new. The server
             // dedupes by timestamp, so over-sending costs nothing and repairs
             // the pipeline if either side ever loses its place.
-            post(settings, window)
+            val tokenState = post(settings, window)
+
+            // The server accepted and durably spooled the reading, so the phone
+            // is done with it either way - but if Garmin cannot be reached the
+            // person needs to know it is sitting there.
+            if (tokenState != null && tokenState != "valid") {
+                Notifications.garminLoginNeeded(applicationContext)
+            }
 
             settings.lastConfirmedMillis = newest
             settings.consecutiveFailures = 0
@@ -111,7 +118,8 @@ class SyncWorker(context: Context, params: WorkerParameters) :
             }
         )
 
-    private fun post(settings: Settings, records: List<WeighIn>) {
+    /** Posts the batch. Returns the server's Garmin token state, if it sent one. */
+    private fun post(settings: Settings, records: List<WeighIn>): String? {
         val body = Payload.build(records)
 
         val connection =
@@ -131,6 +139,10 @@ class SyncWorker(context: Context, params: WorkerParameters) :
                 val detail = connection.errorStream?.bufferedReader()?.readText().orEmpty()
                 throw IllegalStateException("server returned $code $detail".trim())
             }
+            val reply = connection.inputStream.bufferedReader().readText()
+            return runCatching {
+                org.json.JSONObject(reply).optString("token_state").ifEmpty { null }
+            }.getOrNull()
         } finally {
             connection.disconnect()
         }
