@@ -6,19 +6,12 @@ services:
     env_file: .env
     volumes:
       - ./data:/data
-    # BIND_ADDR defaults to loopback, which suits a host with a reverse proxy in
-    # front. Set it to the host's LAN address (or 0.0.0.0) when the phone has to
-    # reach the container directly.
-    #
-    # Publishing beyond loopback is a real exposure decision: Docker's iptables
-    # DOCKER chain DNATs *before* ufw/firewalld, so a host firewall you believe
-    # blocks this port will not block it.
-    #
-    # HOST_PORT is the published port only. The listener inside the container is
-    # always 8080 - do not reuse INGEST_PORT here, or changing it to dodge a
-    # host conflict would move the listener out from under the mapping.
+    # Reachable on the host's addresses, which is what a phone and an off-box
+    # reverse proxy both need. Set HOST_PORT only if 8080 is already taken; the
+    # listener inside the container is always 8080, so do not reuse INGEST_PORT
+    # here or changing it would move the listener out from under the mapping.
     ports:
-      - "${BIND_ADDR:-127.0.0.1}:${HOST_PORT:-8080}:8080"
+      - "${HOST_PORT:-8080}:8080"
     restart: unless-stopped
     # SIGTERM breaks the sync loop out of its wait, so shutdown is prompt and
     # in-flight requests finish rather than being severed.

@@ -156,22 +156,9 @@ Two things that matter:
 Leave `GARMIN_EMAIL`/`GARMIN_PASSWORD` blank unless you want unattended
 re-login; the `/login` page covers it and stores no password.
 
-`BIND_ADDR` is the **host-side interface** the container publishes on. It
-defaults to `127.0.0.1`, which is reachable only from inside the LXC — so set it
-to the LXC's own address whenever anything else has to connect:
-
-```bash
-BIND_ADDR=192.168.1.25     # this LXC's LAN address
-HOST_PORT=8080
-```
-
-Leave the default only if your reverse proxy runs **on this same LXC**; then it
-connects over loopback and nothing is published to the network at all.
-
-`0.0.0.0` also works and means "every interface", but naming the address is
-worth the few extra characters. Either way, publishing beyond loopback is an
-exposure decision: Docker's iptables `DOCKER` chain DNATs *before*
-`ufw`/`firewalld`, so a host firewall you believe blocks this port will not.
+The service listens on port 8080, published on the host's addresses — so the
+phone and your reverse proxy can both reach it at `http://<lxc-ip>:8080` with no
+further configuration. Set `HOST_PORT` in `.env` only if 8080 is already taken.
 
 ### 5. Build and start
 
@@ -236,7 +223,7 @@ git pull && docker compose up -d --build    # update
 ## Reverse proxy (optional)
 
 Only worth it for a friendly hostname and TLS. A plain pass-through is all it
-needs; point it at wherever you published the container:
+needs, pointed at the LXC:
 
 ```nginx
 server {
@@ -245,7 +232,7 @@ server {
     # trust store covers it - no custom trust anchor, no cleartext exception.
 
     location / {
-        proxy_pass http://127.0.0.1:8080;
+        proxy_pass http://192.168.1.25:8080;   # the LXC running the container
     }
 }
 ```
@@ -262,9 +249,9 @@ If you later want the pages protected too, add Basic auth on `location /` and gi
 `/weigh-ins` its own `location` block without it — the app authenticates with the
 token, not with Basic auth.
 
-> **Do not** publish port 8080 on a LAN interface instead of proxying. Docker's
-> iptables `DOCKER` chain DNATs *before* `ufw`/`firewalld`, so a host firewall you
-> believe is blocking 8080 will not block it.
+Worth knowing either way: Docker's iptables `DOCKER` chain DNATs *before*
+`ufw`/`firewalld`, so a host firewall you believe is blocking 8080 will not
+block it. Keep the LXC off untrusted networks rather than relying on that.
 
 ## The Android app
 
