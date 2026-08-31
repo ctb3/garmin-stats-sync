@@ -7,6 +7,10 @@ android {
     namespace = "net.ct3.garminsync"
     compileSdk = 36
 
+    // Otherwise the artifact is the module name: "app-debug.apk", which is not
+    // a useful thing to find in a downloads folder a year from now.
+    base.archivesName = "garmin-sync"
+
     defaultConfig {
         applicationId = "net.ct3.garminsync"
         // Health Connect background reads need Android 15+; the app still

@@ -340,3 +340,21 @@ def test_status_page_renders_local_single_line_timestamps(server, config):
     # America/New_York is UTC-4 in August: 12:03 UTC -> 08:03 local.
     assert b"2026-08-31 08:03:31" in body
     assert b"12:03:31.873005" not in body
+
+
+def test_status_reads_the_run_log_once(server, config, monkeypatch):
+    """Every helper on RunLog re-reads the file; a status view wants all three."""
+    from garmin_stats_sync import runlog as runlog_module
+
+    _, base = server
+    reads = []
+    original = runlog_module.RunLog.recent
+
+    def counting(self, limit=50):
+        reads.append(limit)
+        return original(self, limit)
+
+    monkeypatch.setattr(runlog_module.RunLog, "recent", counting)
+    _get(f"{base}/status")
+
+    assert len(reads) == 1

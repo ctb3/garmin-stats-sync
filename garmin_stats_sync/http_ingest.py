@@ -299,14 +299,15 @@ class App:
     # --- views --------------------------------------------------------------
 
     def health(self) -> dict:
-        last = self.runlog.last_success()
-        failures = self.runlog.consecutive_failures()
+        log = self.runlog.snapshot()
         return {
-            "ok": failures == 0,
-            "last_success": last.isoformat() if last else None,
+            "ok": log.consecutive_failures == 0,
+            "last_success": (
+                log.last_success.isoformat() if log.last_success else None
+            ),
             "pending": len(self.inbox.pending()),
             "token_state": garmin_auth.token_state(self.config),
-            "consecutive_failures": failures,
+            "consecutive_failures": log.consecutive_failures,
         }
 
     def status(self) -> dict:
@@ -318,9 +319,9 @@ class App:
         """
         token = garmin_auth.token_state(self.config)
         pending = self.inbox.pending()
-        runs = self.runlog.recent(40)
+        log = self.runlog.snapshot(40)
         return {
-            "ok": self.runlog.consecutive_failures() == 0 and token == "valid",
+            "ok": log.consecutive_failures == 0 and token == "valid",
             "token_state": token,
             # Handed over rather than assembled on the phone, so the app never
             # has to guess how this service is addressed.
@@ -329,10 +330,9 @@ class App:
             else "/login",
             "timezone": str(self.config.local_tz),
             "last_success": (
-                self.runlog.last_success().isoformat()
-                if self.runlog.last_success() else None
+                log.last_success.isoformat() if log.last_success else None
             ),
-            "consecutive_failures": self.runlog.consecutive_failures(),
+            "consecutive_failures": log.consecutive_failures,
             "pending": [
                 {
                     "taken_at": entry.reading.taken_at.isoformat(),
@@ -351,7 +351,7 @@ class App:
                     "fetched": r.fetched,
                     "error": r.error,
                 }
-                for r in reversed(runs)
+                for r in reversed(log.entries)
             ],
         }
 

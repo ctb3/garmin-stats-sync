@@ -255,16 +255,28 @@ block it. Keep the LXC off untrusted networks rather than relying on that.
 
 ## The Android app
 
-There is no local Android toolchain by design. Push to GitHub and the
-[workflow](.github/workflows/android.yml) builds a debug APK; download it from the run
-artifacts and sideload it. Sideloading means no Play listing, so no Health Connect
+Reads `WeightRecord` from Health Connect and posts it here. Built by
+[CI](.github/workflows/android.yml) as `garmin-sync-debug.apk` — download it from
+the run artifacts and sideload it; there is no Play listing, so no Health Connect
 declaration form and no privacy policy.
 
-In the app: enter the server address and the `INGEST_TOKEN`, tap **Save and grant
-permissions**, and grant **Weight** plus background access. Then tap **Sync now** once
-to confirm it works.
+On first run it opens **Settings** and asks for the server address and the
+`INGEST_TOKEN`. Both live behind that dialog afterwards rather than on the main
+screen — they are set once, and a live text box is only a way to break a working
+install by mistyping into it.
 
-Grant only Weight. The app requests nothing else.
+The main screen is a dashboard for the whole pipeline, pulled from `/status`:
+
+- whether everything is up to date, waiting, or needs attention
+- the Garmin token state, with a **Log in to Garmin** button that opens the
+  server's login page in a browser when one is needed
+- weigh-ins the server has accepted but not yet delivered
+- a run log mirroring the container's status page
+
+Everything renders in the phone's timezone as `yyyy-MM-dd HH:mm`. Notifications
+open the dashboard, so the login button is one tap away from the notification.
+
+Grant only **Weight** when Health Connect asks. The app requests nothing else.
 
 ## Endpoints
 
@@ -274,6 +286,7 @@ Grant only Weight. The app requests nothing else.
 | `GET` | `/` | whatever the proxy enforces | Status: recent runs, pending spool, token state |
 | `GET`/`POST` | `/login` | whatever the proxy enforces | Garmin login and MFA |
 | `GET`/`HEAD` | `/health` | none | JSON for external monitoring |
+| `GET` | `/status` | none | Full pipeline state as JSON, for the app |
 
 The token is accepted **only** as a header — never a query string or cookie — so a
 browser page cannot drive the endpoint without a preflight this service never answers.
@@ -288,6 +301,16 @@ browser page cannot drive the endpoint without a preflight this service never an
 Point an uptime monitor at it and alert on `token_state != "valid"`, a rising
 `pending`, or a stale `last_success`. The app raises a phone notification for the one
 failure this cannot see — the server being unreachable.
+
+`token_state` is verified against Garmin at most once every 15 minutes and cached,
+because the check costs two API calls and the answer changes about once a year.
+A successful login updates it immediately, so the status page never lags behind
+what you just did.
+
+`/status` is the richer version the app polls: token state, the weigh-ins accepted
+but not yet delivered, recent runs, the server's timezone, and the login URL. It
+hands over the login URL rather than letting the app assemble one, so the app never
+has to know how this service is addressed.
 
 ## Commands
 

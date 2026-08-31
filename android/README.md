@@ -31,7 +31,8 @@ echo "sdk.dir=$ANDROID_HOME" > local.properties
 gradle testDebugUnitTest assembleDebug
 ```
 
-The APK lands at `app/build/outputs/apk/debug/app-debug.apk`.
+The APK lands at `app/build/outputs/apk/debug/garmin-sync-debug.apk` — the name
+comes from `base.archivesName`, not the Gradle module name.
 
 ## Version constraints
 

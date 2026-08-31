@@ -45,6 +45,13 @@ class RunEntry:
         return local(self.when, tz)
 
 
+@dataclass(frozen=True, slots=True)
+class Snapshot:
+    entries: list[RunEntry]
+    last_success: datetime | None
+    consecutive_failures: int
+
+
 class RunLog:
     def __init__(self, path: Path | str) -> None:
         self.path = Path(path)
@@ -78,18 +85,39 @@ class RunLog:
         return entries
 
     def last_success(self) -> datetime | None:
-        for entry in reversed(self.recent(MAX_ENTRIES)):
-            if entry.ok:
-                return entry.when
-        return None
+        return last_success(self.recent(MAX_ENTRIES))
 
     def consecutive_failures(self) -> int:
-        count = 0
-        for entry in reversed(self.recent(MAX_ENTRIES)):
-            if entry.ok:
-                break
-            count += 1
-        return count
+        return consecutive_failures(self.recent(MAX_ENTRIES))
+
+    def snapshot(self, limit: int = 50) -> Snapshot:
+        """Everything a status view needs, from a single read of the file.
+
+        The convenience methods above each re-read it, which is fine for one
+        call and wasteful for a page that wants all three at once.
+        """
+        entries = self.recent(MAX_ENTRIES)
+        return Snapshot(
+            entries=entries[-limit:],
+            last_success=last_success(entries),
+            consecutive_failures=consecutive_failures(entries),
+        )
+
+
+def last_success(entries: list[RunEntry]) -> datetime | None:
+    for entry in reversed(entries):
+        if entry.ok:
+            return entry.when
+    return None
+
+
+def consecutive_failures(entries: list[RunEntry]) -> int:
+    count = 0
+    for entry in reversed(entries):
+        if entry.ok:
+            break
+        count += 1
+    return count
 
 
 def entry_from_result(result, trigger: str, error: str | None = None) -> RunEntry:
