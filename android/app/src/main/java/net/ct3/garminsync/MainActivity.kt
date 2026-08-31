@@ -25,8 +25,6 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.PermissionController
 import androidx.lifecycle.lifecycleScope
-import androidx.work.OneTimeWorkRequestBuilder
-import androidx.work.WorkManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -235,8 +233,7 @@ class MainActivity : AppCompatActivity() {
             showSettings()
             return
         }
-        WorkManager.getInstance(this)
-            .enqueue(OneTimeWorkRequestBuilder<SyncWorker>().build())
+        SyncWorker.runNow(this)
         toast("Sync requested")
         headline.postDelayed({ refresh() }, 3000)
     }
@@ -268,7 +265,17 @@ class MainActivity : AppCompatActivity() {
             headline.text = getString(R.string.server_unreachable)
             headline.setTextColor(Color.parseColor(RED))
             detail.text = buildString {
-                appendLine(error.ifEmpty { "No response from the server." })
+                if (error.contains("404")) {
+                    // /status arrived after the first release, so a 404 here
+                    // almost always means the container predates it.
+                    appendLine(
+                        "The server answered, but has no /status endpoint - it is "
+                            + "probably running an older build. Update the "
+                            + "container and try again."
+                    )
+                } else {
+                    appendLine(error.ifEmpty { "No response from the server." })
+                }
                 appendLine()
                 append("Last sync attempt from this phone: ${settings.lastResult}")
             }

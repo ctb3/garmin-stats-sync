@@ -54,10 +54,18 @@ class SyncWorker(context: Context, params: WorkerParameters) :
             // supplying the batch to send.
             val window = toWeighIns(readWindow(client))
             val newest = window.maxOfOrNull { it.epochMillis } ?: 0L
-            if (newest <= settings.lastConfirmedMillis) {
+            val forced = inputData.getBoolean(FORCE, false)
+            if (!forced && newest <= settings.lastConfirmedMillis) {
                 // The short-circuit that keeps polling cheap: no radio, no
                 // connection, nothing to report. This is the path ~47 of 48
-                // daily runs take.
+                // daily runs take - but never the path a Sync now takes, or
+                // the button would appear to do nothing.
+                settings.lastResult = "Nothing new at ${When.full(Instant.now())}"
+                return@withContext Result.success()
+            }
+            if (window.isEmpty()) {
+                settings.lastResult =
+                    "No weigh-ins in Health Connect in the last 7 days"
                 return@withContext Result.success()
             }
 
@@ -75,13 +83,15 @@ class SyncWorker(context: Context, params: WorkerParameters) :
 
             settings.lastConfirmedMillis = newest
             settings.consecutiveFailures = 0
-            settings.lastResult = "Sent ${window.size} record(s) at ${Instant.now()}"
+            settings.lastResult =
+                "Sent ${window.size} weigh-in(s) at ${When.full(Instant.now())}"
             Notifications.clear(applicationContext)
             Result.success()
         } catch (e: Exception) {
             val failures = settings.consecutiveFailures + 1
             settings.consecutiveFailures = failures
-            settings.lastResult = "Failed: ${e.message}"
+            settings.lastResult =
+                "Failed at ${When.full(Instant.now())}: ${e.message}"
             Log.w(TAG, "sync failed (attempt $failures)", e)
             if (failures >= FAILURES_BEFORE_NOTIFYING) {
                 Notifications.syncFailing(applicationContext, e.message.orEmpty())
@@ -154,6 +164,9 @@ class SyncWorker(context: Context, params: WorkerParameters) :
         private const val INGEST_PATH = "/weigh-ins"
         private const val FAILURES_BEFORE_NOTIFYING = 3
 
+        /** Set on a manual sync, to bypass the "nothing new" short-circuit. */
+        const val FORCE = "force"
+
         private val WINDOW: Duration = Duration.ofDays(7)
         private val PERIOD: Duration = Duration.ofMinutes(30)
         // Lets JobScheduler place the run inside a window it is already waking
@@ -164,6 +177,15 @@ class SyncWorker(context: Context, params: WorkerParameters) :
             HealthPermission.getReadPermission(WeightRecord::class),
             HealthPermission.PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND,
         )
+
+        /** A one-off run that sends even when the phone thinks nothing changed. */
+        fun runNow(context: Context) {
+            WorkManager.getInstance(context).enqueue(
+                androidx.work.OneTimeWorkRequestBuilder<SyncWorker>()
+                    .setInputData(androidx.work.workDataOf(FORCE to true))
+                    .build()
+            )
+        }
 
         fun schedule(context: Context) {
             val constraints = Constraints.Builder()
