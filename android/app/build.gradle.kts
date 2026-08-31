@@ -17,15 +17,42 @@ android {
         // installs below that and simply syncs while it is open.
         minSdk = 30
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        // CI passes its run number so two APKs are distinguishable and Android
+        // treats a newer build as an upgrade.
+        versionCode = (System.getenv("VERSION_CODE") ?: "1").toInt()
+        versionName = "1.0.${System.getenv("VERSION_CODE") ?: "0"}"
+    }
+
+    signingConfigs {
+        create("release") {
+            // Supplied by CI from repository secrets, or by a local
+            // keystore.properties that is never committed. Absent both, the
+            // release build is skipped rather than silently unsigned.
+            val keystore = rootProject.file("keystore.jks")
+            if (keystore.exists()) {
+                storeFile = keystore
+                storePassword = System.getenv("KEYSTORE_PASSWORD")
+                    ?: providers.gradleProperty("keystorePassword").orNull
+                keyAlias = "garmin-sync"
+                keyPassword = System.getenv("KEYSTORE_PASSWORD")
+                    ?: providers.gradleProperty("keystorePassword").orNull
+            }
+        }
     }
 
     buildTypes {
-        // Debug only: the APK is sideloaded, never published, so there is no
-        // release signing key to manage.
         getByName("debug") {
             isMinifyEnabled = false
+        }
+        getByName("release") {
+            // Not debuggable, so the ingest token cannot be read out over adb.
+            // Stably signed, so every future build installs as an in-place
+            // upgrade instead of forcing an uninstall that would take the
+            // saved server address and token with it.
+            isMinifyEnabled = false
+            if (rootProject.file("keystore.jks").exists()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 

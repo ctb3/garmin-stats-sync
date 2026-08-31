@@ -33,9 +33,37 @@ jobs:
         working-directory: android
         run: gradle testDebugUnitTest --no-daemon --stacktrace
 
-      - name: Build debug APK
+      # Absent the secrets (a fork, or before they are configured) this writes
+      # nothing and the release build below falls back to unsigned, which the
+      # upload step then fails on - loudly, rather than shipping an APK that
+      # cannot be installed.
+      - name: Restore signing keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > android/keystore.jks
+            echo "keystore restored ($(stat -c%s android/keystore.jks) bytes)"
+          else
+            echo "::error::KEYSTORE_BASE64 secret is not set"
+            exit 1
+          fi
+
+      - name: Build release APK
         working-directory: android
-        run: gradle assembleDebug --no-daemon --stacktrace
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          VERSION_CODE: ${{ github.run_number }}
+        run: gradle assembleRelease --no-daemon --stacktrace
+
+      - name: Verify the APK is signed and not debuggable
+        run: |
+          APK=android/app/build/outputs/apk/release/garmin-sync-release.apk
+          "$ANDROID_HOME"/build-tools/35.0.0/apksigner verify --print-certs "$APK"
+          if "$ANDROID_HOME"/build-tools/35.0.0/aapt2 dump badging "$APK" \
+               | grep -q application-debuggable; then
+            echo "::error::release APK is debuggable"; exit 1
+          fi
 
       - name: Upload test report on failure
         if: failure()
@@ -46,6 +74,6 @@ jobs:
 
       - uses: actions/upload-artifact@v5
         with:
-          name: garmin-sync-debug-apk
-          path: android/app/build/outputs/apk/debug/garmin-sync-debug.apk
+          name: garmin-sync-apk
+          path: android/app/build/outputs/apk/release/garmin-sync-release.apk
           if-no-files-found: error

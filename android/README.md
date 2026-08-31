@@ -34,6 +34,30 @@ gradle testDebugUnitTest assembleDebug
 The APK lands at `app/build/outputs/apk/debug/garmin-sync-debug.apk` — the name
 comes from `base.archivesName`, not the Gradle module name.
 
+## Release builds
+
+CI builds `garmin-sync-release.apk`: not debuggable, so the ingest token cannot
+be read out over adb, and signed with a fixed key so every build installs as an
+in-place upgrade rather than forcing an uninstall that would take the saved
+server address and token with it.
+
+Signing comes from two repository secrets, `KEYSTORE_BASE64` and
+`KEYSTORE_PASSWORD`. `versionCode` is the CI run number, so builds are ordered
+and distinguishable.
+
+To build a signed release locally, put the same keystore at `android/keystore.jks`
+(gitignored) and:
+
+```bash
+KEYSTORE_PASSWORD=... VERSION_CODE=1 gradle assembleRelease
+```
+
+Without that file the release build is unsigned and will not install — the debug
+build is the one to use for day-to-day local work.
+
+**Keep the keystore.** Losing it means future APKs are signed with a different
+key, and Android will refuse to install them over the existing app.
+
 ## Version constraints
 
 `androidx.health.connect:connect-client:1.1.0` requires **compileSdk 36** and

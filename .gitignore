@@ -10,3 +10,5 @@ android/build/
 android/app/build/
 .gradle/
 android/.kotlin/
+android/keystore.jks
+android/keystore.properties
