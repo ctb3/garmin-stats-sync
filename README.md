@@ -62,24 +62,176 @@ stays manual. Everything after it is automatic.
 - So a weigh-in arriving while your Garmin token is expired is accepted, held, and
   uploaded once you log in again. No re-POST from the phone is needed.
 
-## Setup
+## Deploying to Proxmox
 
-### 1. The service
+End to end, from an empty Proxmox host to weigh-ins landing in Garmin. Everything
+runs in one small unprivileged LXC.
+
+### 1. Create the LXC
+
+Docker inside an unprivileged container needs the **nesting** and **keyctl**
+features. 1 core / 512 MB RAM / 8 GB disk is plenty.
+
+```bash
+# from the Proxmox host
+pct create 120 local:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst \
+  --hostname garmin-sync \
+  --cores 1 --memory 512 --rootfs local-lvm:8 \
+  --net0 name=eth0,bridge=vmbr0,ip=dhcp \
+  --features nesting=1,keyctl=1 \
+  --unprivileged 1 --onboot 1 --start 1
+pct enter 120
+```
+
+If the LXC already exists, set the features and restart it:
+
+```bash
+pct set 120 --features nesting=1,keyctl=1 --onboot 1
+pct reboot 120
+```
+
+### 2. Install Docker in the container
+
+```bash
+apt update && apt install -y ca-certificates curl git
+
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+chmod a+r /etc/apt/keyrings/docker.asc
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
+https://download.docker.com/linux/debian $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+  > /etc/apt/sources.list.d/docker.list
+
+apt update
+apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+```
+
+Confirm the daemon actually works inside the LXC before going further:
+
+```bash
+docker run --rm hello-world
+```
+
+If that fails with an overlayfs error (common when the LXC rootfs is on ZFS),
+switch Docker to fuse-overlayfs and retry:
+
+```bash
+apt install -y fuse-overlayfs
+mkdir -p /etc/docker
+echo '{"storage-driver": "fuse-overlayfs"}' > /etc/docker/daemon.json
+systemctl restart docker && docker run --rm hello-world
+```
+
+### 3. Get the code
+
+```bash
+git clone https://github.com/ctb3/garmin-stats-sync.git /opt/garmin-stats-sync
+cd /opt/garmin-stats-sync
+```
+
+If the repo is private, clone over SSH with a deploy key, or push the working
+copy straight from your workstation:
+
+```bash
+rsync -av --exclude .venv --exclude data --exclude .env --exclude android/app/build \
+  ./ root@<lxc-ip>:/opt/garmin-stats-sync/
+```
+
+### 4. Configure
 
 ```bash
 cp .env.example .env
-python -c "import secrets; print(secrets.token_urlsafe(32))"   # INGEST_TOKEN
-docker compose up -d
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"   # INGEST_TOKEN
+nano .env
+chmod 600 .env
+mkdir -p data
 ```
 
-`GARMIN_EMAIL`/`GARMIN_PASSWORD` are optional. Leave them blank and log in through the
-web page instead — Garmin sessions last about a year, so you will be prompted again
-only when they expire, and no password is ever stored.
+Two things that matter:
 
-### 2. The reverse proxy (optional)
+- **`INGEST_TOKEN`** — required, minimum 32 characters. The app sends it.
+- **`LOCAL_TZ`** — decides which calendar day a weigh-in is recorded against. Set
+  your own timezone (`America/New_York`, …), not UTC.
 
-The container publishes to **loopback only**, so a proxy is how you reach it from
-the phone. A plain pass-through is all it needs:
+Leave `GARMIN_EMAIL`/`GARMIN_PASSWORD` blank unless you want unattended
+re-login; the `/login` page covers it and stores no password.
+
+The phone has to reach the container, so publish beyond loopback. In `.env`:
+
+```bash
+BIND_ADDR=0.0.0.0
+HOST_PORT=8080
+```
+
+Use the LXC's own LAN address instead of `0.0.0.0` if it has more than one
+interface. Note that Docker's iptables `DOCKER` chain DNATs *before*
+`ufw`/`firewalld`, so a host firewall you believe is blocking this port will
+not block it — treat publishing as the exposure decision it is.
+
+### 5. Build and start
+
+```bash
+docker compose build
+docker compose up -d
+docker compose logs -f
+```
+
+Expect `ingest listening on 0.0.0.0:8080` within a second or two.
+
+### 6. Log in to Garmin
+
+```bash
+curl -s localhost:8080/health     # token_state should be "absent"
+```
+
+Open `http://<lxc-ip>:8080/login` in a browser and sign in. If your account uses
+MFA you get a second step for the code. Then confirm:
+
+```bash
+curl -s localhost:8080/health     # token_state should now be "valid"
+```
+
+### 7. Prove the pipeline before trusting it
+
+Post a weigh-in by hand — no phone needed:
+
+```bash
+TOKEN=$(grep ^INGEST_TOKEN= .env | cut -d= -f2-)
+curl -sS -X POST localhost:8080/weigh-ins \
+  -H "X-Auth-Token: $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"records\":[{\"metadata\":{\"id\":\"manual-1\"},
+       \"time\":$(($(date +%s)*1000)),\"weight\":{\"kilograms\":80.0}}]}"
+```
+
+Expect `{"accepted": 1, "rejected": []}`, then the upload in the logs within
+seconds. Check Garmin Connect under **Health Stats → Weight** for an 80.0 kg
+entry at today's date, and delete it there once you are satisfied.
+
+A `412 ... upload consent is not yet granted` here means Garmin has the account
+flagged EU-location — see [Troubleshooting](#troubleshooting).
+
+### 8. Confirm it survives a reboot
+
+```bash
+reboot                      # inside the LXC
+docker compose ps           # after it comes back, expect "healthy"
+```
+
+The container restarts via `restart: unless-stopped`, the LXC via `--onboot 1`.
+Nothing to schedule — the loop does its own timing.
+
+### Day to day
+
+```bash
+docker compose logs -f                      # watch it work
+docker compose restart                      # after editing .env
+git pull && docker compose up -d --build    # update
+```
+
+## Reverse proxy (optional)
+
+Only worth it for a friendly hostname and TLS. A plain pass-through is all it
+needs; point it at wherever you published the container:
 
 ```nginx
 server {
@@ -109,12 +261,7 @@ token, not with Basic auth.
 > iptables `DOCKER` chain DNATs *before* `ufw`/`firewalld`, so a host firewall you
 > believe is blocking 8080 will not block it.
 
-### 3. Log in to Garmin
-
-Visit `https://garmin-sync.example.net/login`. If your account uses MFA you will be
-asked for the code on a second step.
-
-### 4. The Android app
+## The Android app
 
 There is no local Android toolchain by design. Push to GitHub and the
 [workflow](.github/workflows/android.yml) builds a debug APK; download it from the run

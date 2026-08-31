@@ -6,15 +6,19 @@ services:
     env_file: .env
     volumes:
       - ./data:/data
-    # Loopback only: the reverse proxy connects locally and terminates TLS.
-    # Binding 0.0.0.0 here would publish on every host interface, and Docker's
-    # iptables DOCKER chain DNATs *before* ufw/firewalld - so a host firewall
-    # you believe blocks 8080 would not.
-    # HOST_PORT is the published port only. The app always listens on 8080
-    # inside the container - do not reuse INGEST_PORT here, or changing it to
-    # dodge a host conflict would move the listener out from under the mapping.
+    # BIND_ADDR defaults to loopback, which suits a host with a reverse proxy in
+    # front. Set it to the host's LAN address (or 0.0.0.0) when the phone has to
+    # reach the container directly.
+    #
+    # Publishing beyond loopback is a real exposure decision: Docker's iptables
+    # DOCKER chain DNATs *before* ufw/firewalld, so a host firewall you believe
+    # blocks this port will not block it.
+    #
+    # HOST_PORT is the published port only. The listener inside the container is
+    # always 8080 - do not reuse INGEST_PORT here, or changing it to dodge a
+    # host conflict would move the listener out from under the mapping.
     ports:
-      - "127.0.0.1:${HOST_PORT:-8080}:8080"
+      - "${BIND_ADDR:-127.0.0.1}:${HOST_PORT:-8080}:8080"
     restart: unless-stopped
     # SIGTERM breaks the sync loop out of its wait, so shutdown is prompt and
     # in-flight requests finish rather than being severed.
