@@ -53,9 +53,10 @@ stays manual. Everything after it is automatic.
 - The phone advances its high-water mark **only after the server confirms a 2xx**. A
   failed POST leaves it unmoved, so the next run re-reads the same records. Health
   Connect is the queue; the app deliberately keeps no second copy that could diverge.
-- The phone sends a 7-day window whenever anything is new. The server dedupes by
-  timestamp, so over-sending is free and repairs the pipeline if either side loses
-  its place.
+- The phone reads **everything back to that mark** — no fixed window. On a first run
+  it sends the full history Health Connect still holds. **Sync now** ignores the mark
+  entirely, which is how you re-send after rebuilding the server.
+- The server dedupes by timestamp, so re-sending a reading it already has is free.
 - The server does not answer `200` until the reading is `fsync`'d to `/data/inbox/`.
 - A spooled reading is deleted only on **positive proof of delivery** — presence in
   `state.json`'s `synced` list, which is written only after a successful Garmin upload.
@@ -276,7 +277,14 @@ The main screen is a dashboard for the whole pipeline, pulled from `/status`:
 Everything renders in the phone's timezone as `yyyy-MM-dd HH:mm`. Notifications
 open the dashboard, so the login button is one tap away from the notification.
 
-Grant only **Weight** when Health Connect asks. The app requests nothing else.
+Grant only **Weight** when Health Connect asks, plus background access and history.
+The app requests nothing else — history is what stops Health Connect capping reads
+at the last 30 days, which would silently truncate a first sync.
+
+`COLD_START_DAYS` on the server decides how much of a backfill actually reaches
+Garmin: on a cold start it only accepts weigh-ins from the last N days (7 by
+default) and drops the rest from the spool with a note in the log. Raise it before
+the first sync if you want the whole history.
 
 ## Endpoints
 

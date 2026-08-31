@@ -12,6 +12,9 @@
     <!-- Android 15+. Without it a scheduled read returns nothing while the
          screen is off, and the sync silently never happens. -->
     <uses-permission android:name="android.permission.health.READ_HEALTH_DATA_IN_BACKGROUND" />
+    <!-- Reads are capped at 30 days without this, so a first sync would
+         silently truncate rather than backfilling what the phone still holds. -->
+    <uses-permission android:name="android.permission.health.READ_HEALTH_DATA_HISTORY" />
 
     <!-- To detect whether Health Connect is present at all. -->
     <queries>

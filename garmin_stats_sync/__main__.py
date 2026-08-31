@@ -55,7 +55,7 @@ def cmd_sync(config: Config, args, trigger: str = "manual") -> int:
     if not dry_run:
         # Only entries with positive proof of delivery are removed; see
         # Inbox.prune for why `not state.is_new(...)` would be wrong here.
-        removed = inbox.prune(state, config.inbox_retention_days)
+        removed = inbox.prune(state, config.inbox_retention_days, since=since)
         if removed:
             logger.debug("pruned %s delivered weigh-in(s) from the spool", removed)
 

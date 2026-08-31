@@ -137,6 +137,7 @@ class Inbox:
         state: State,
         retention_days: int,
         now: datetime | None = None,
+        since: datetime | None = None,
     ) -> int:
         """Delete spool files that are confirmed delivered or past retention.
 
@@ -146,9 +147,14 @@ class Inbox:
         reading whose upload failed out of order, so it would delete weigh-ins
         still owed to Garmin.
 
-        The age sweep is not belt-and-braces. A reading older than the resolved
-        `since` is skipped before the dedupe check, so it never enters `synced`
-        and would otherwise be retried on every cycle forever.
+        Entries older than `since` are a separate case: the service has decided
+        it will never send them, so they are dropped quietly rather than lingering
+        until the age sweep reports them as undelivered. The phone backfills
+        everything it holds, so on a cold start this is the normal path, not an
+        error.
+
+        The age sweep remains the backstop for anything neither delivered nor
+        declined - a reading that failed out of order, say.
         """
         now = now or datetime.now(UTC)
         cutoff = now - timedelta(days=retention_days)
@@ -156,9 +162,16 @@ class Inbox:
 
         for entry in self._spooled():
             delivered = entry.reading.source_timestamp in state.synced
-            if not delivered and entry.received_at > cutoff:
+            declined = since is not None and entry.reading.taken_at < since
+            if declined and not delivered:
+                logger.info(
+                    "dropping weigh-in older than the sync window: %.1f kg taken %s",
+                    entry.reading.weight_kg,
+                    entry.reading.taken_at.isoformat(),
+                )
+            elif not delivered and entry.received_at > cutoff:
                 continue
-            if not delivered:
+            elif not delivered:
                 logger.warning(
                     "dropping spooled weigh-in never confirmed to Garmin: "
                     "%.1f kg taken %s, received %s",

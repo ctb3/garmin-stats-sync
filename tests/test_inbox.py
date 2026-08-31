@@ -153,3 +153,33 @@ def test_pending_reports_receipt_time(tmp_path):
 
 def test_missing_directory_is_not_an_error(tmp_path):
     assert Inbox(tmp_path / "nope").fetch_readings() == []
+
+
+def test_prune_drops_readings_the_service_declined(tmp_path, caplog):
+    """The phone backfills everything it holds; the server only wants readings
+    newer than `since`. Those it declines are not failures."""
+    inbox = Inbox(tmp_path / "inbox")
+    old = 1_600_000_000  # well before NOW
+    inbox.append(_reading(old), _raw(old), "old", now=NOW)
+    state = State(path=tmp_path / "state.json")
+    since = NOW - timedelta(days=7)
+
+    with caplog.at_level("WARNING"):
+        assert inbox.prune(state, retention_days=30, now=NOW, since=since) == 1
+
+    assert inbox.fetch_readings() == []
+    assert "never confirmed" not in caplog.text
+
+
+def test_prune_keeps_recent_undelivered_readings_inside_the_window(tmp_path):
+    inbox = Inbox(tmp_path / "inbox")
+    recent = int((NOW - timedelta(days=1)).timestamp())
+    inbox.append(_reading(recent), _raw(recent), "recent", now=NOW)
+    state = State(path=tmp_path / "state.json")
+
+    kept = inbox.prune(
+        state, retention_days=30, now=NOW, since=NOW - timedelta(days=7)
+    )
+
+    assert kept == 0
+    assert len(inbox.fetch_readings()) == 1

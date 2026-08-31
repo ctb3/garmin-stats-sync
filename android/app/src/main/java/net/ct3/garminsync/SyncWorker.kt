@@ -52,9 +52,13 @@ class SyncWorker(context: Context, params: WorkerParameters) :
 
             // One read covers both jobs: deciding whether anything is new, and
             // supplying the batch to send.
-            val window = toWeighIns(readWindow(client))
-            val newest = window.maxOfOrNull { it.epochMillis } ?: 0L
             val forced = inputData.getBoolean(FORCE, false)
+            // Everything Health Connect still holds, back to the last reading
+            // the server confirmed - no fixed window. A manual sync ignores the
+            // mark entirely, which is the way to re-send after a server rebuild.
+            val since = if (forced) 0L else settings.lastConfirmedMillis
+            val window = toWeighIns(readSince(client, since))
+            val newest = window.maxOfOrNull { it.epochMillis } ?: 0L
             if (!forced && newest <= settings.lastConfirmedMillis) {
                 // The short-circuit that keeps polling cheap: no radio, no
                 // connection, nothing to report. This is the path ~47 of 48
@@ -64,8 +68,7 @@ class SyncWorker(context: Context, params: WorkerParameters) :
                 return@withContext Result.success()
             }
             if (window.isEmpty()) {
-                settings.lastResult =
-                    "No weigh-ins in Health Connect in the last 7 days"
+                settings.lastResult = "No weigh-ins found in Health Connect"
                 return@withContext Result.success()
             }
 
@@ -102,8 +105,22 @@ class SyncWorker(context: Context, params: WorkerParameters) :
         }
     }
 
-    private suspend fun readWindow(client: HealthConnectClient): List<WeightRecord> =
-        read(client, TimeRangeFilter.after(Instant.now().minus(WINDOW)))
+    /**
+     * Reads every weigh-in newer than [sinceMillis]; 0 means everything the
+     * datastore still holds.
+     *
+     * How far back "everything" reaches is Health Connect's call, not ours: 30
+     * days by default, or the full retention where READ_HEALTH_DATA_HISTORY has
+     * been granted.
+     */
+    private suspend fun readSince(
+        client: HealthConnectClient,
+        sinceMillis: Long,
+    ): List<WeightRecord> {
+        val floor = if (sinceMillis > 0) Instant.ofEpochMilli(sinceMillis) else EPOCH
+        return read(client, TimeRangeFilter.after(floor))
+            .filter { it.time.toEpochMilli() > sinceMillis }
+    }
 
     private suspend fun read(
         client: HealthConnectClient,
@@ -167,7 +184,7 @@ class SyncWorker(context: Context, params: WorkerParameters) :
         /** Set on a manual sync, to bypass the "nothing new" short-circuit. */
         const val FORCE = "force"
 
-        private val WINDOW: Duration = Duration.ofDays(7)
+        private val EPOCH: Instant = Instant.ofEpochMilli(0)
         private val PERIOD: Duration = Duration.ofMinutes(30)
         // Lets JobScheduler place the run inside a window it is already waking
         // for, rather than forcing a wake of its own.
@@ -176,6 +193,9 @@ class SyncWorker(context: Context, params: WorkerParameters) :
         val PERMISSIONS = setOf(
             HealthPermission.getReadPermission(WeightRecord::class),
             HealthPermission.PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND,
+            // Without this, reads are capped at the last 30 days no matter what
+            // range is asked for - so a first sync would silently truncate.
+            HealthPermission.PERMISSION_READ_HEALTH_DATA_HISTORY,
         )
 
         /** A one-off run that sends even when the phone thinks nothing changed. */
