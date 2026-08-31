@@ -5,7 +5,7 @@
       "metadata": {
         "clientRecordId": null,
         "clientRecordVersion": 0,
-        "dataOrigin": {"packageName": "com.etekcity.vesyncplatform"},
+        "dataOrigin": {"packageName": "com.example.scaleapp"},
         "device": null,
         "id": "hc-record-0003",
         "lastModifiedTime": 1756150260000,
@@ -17,7 +17,7 @@
     },
     {
       "metadata": {
-        "dataOrigin": {"packageName": "com.etekcity.vesyncplatform"},
+        "dataOrigin": {"packageName": "com.example.scaleapp"},
         "id": "hc-record-0002",
         "lastModifiedTime": 1756063860000,
         "recordingMethod": 3
@@ -28,7 +28,7 @@
     },
     {
       "metadata": {
-        "dataOrigin": {"packageName": "com.etekcity.vesyncplatform"},
+        "dataOrigin": {"packageName": "com.example.scaleapp"},
         "id": "hc-record-0001",
         "lastModifiedTime": 1755977460000,
         "recordingMethod": 3

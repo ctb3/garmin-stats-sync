@@ -16,8 +16,8 @@ import java.io.File
 class PayloadTest {
 
     private fun sample() = listOf(
-        WeighIn("hc-1", "com.etekcity.vesyncplatform", 1_756_150_200_000, 82.1),
-        WeighIn("hc-2", "com.etekcity.vesyncplatform", 1_756_063_800_000, 81.9),
+        WeighIn("hc-1", "com.example.scaleapp", 1_756_150_200_000, 82.1),
+        WeighIn("hc-2", "com.example.scaleapp", 1_756_063_800_000, 81.9),
     )
 
     @Test
@@ -31,7 +31,7 @@ class PayloadTest {
         assertEquals(82.1, first.getJSONObject("weight").getDouble("kilograms"), 0.001)
         assertEquals("hc-1", first.getJSONObject("metadata").getString("id"))
         assertEquals(
-            "com.etekcity.vesyncplatform",
+            "com.example.scaleapp",
             first.getJSONObject("metadata")
                 .getJSONObject("dataOrigin").getString("packageName"),
         )
