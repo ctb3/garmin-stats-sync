@@ -20,8 +20,10 @@ def health_connect_payload() -> dict:
 def config(tmp_path):
     """A duck-typed config carrying only what the code under test touches."""
     from types import SimpleNamespace
+    from zoneinfo import ZoneInfo
 
     return SimpleNamespace(
+        local_tz=ZoneInfo("America/New_York"),
         garmin_email="",
         garmin_password="",
         data_dir=tmp_path,

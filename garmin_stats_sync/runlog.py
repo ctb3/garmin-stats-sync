@@ -7,8 +7,18 @@ import logging
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
+
+
+def local(when: datetime, tz: ZoneInfo) -> str:
+    """A timestamp a human reads at a glance: local, to the second, one line.
+
+    Entries are stored as UTC ISO so they stay unambiguous; only the rendering
+    is localised.
+    """
+    return when.astimezone(tz).strftime("%Y-%m-%d %H:%M:%S")
 
 MAX_ENTRIES = 200
 
@@ -30,6 +40,9 @@ class RunEntry:
     @property
     def when(self) -> datetime:
         return datetime.fromisoformat(self.at)
+
+    def local_at(self, tz: ZoneInfo) -> str:
+        return local(self.when, tz)
 
 
 class RunLog:

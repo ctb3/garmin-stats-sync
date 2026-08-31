@@ -29,6 +29,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from garmin_stats_sync import garmin_auth
+from garmin_stats_sync.runlog import local as runlog_local
 from garmin_stats_sync.health_connect import (
     HealthConnectError,
     parse_record,
@@ -98,6 +99,9 @@ class IngestHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/health":
             self._json(HTTPStatus.OK, self.app.health())
+        elif path == "/status":
+            # Richer than /health, for the phone app's dashboard.
+            self._json(HTTPStatus.OK, self.app.status())
         elif path == "/":
             self._html(HTTPStatus.OK, self.app.status_page())
         elif path == "/login":
@@ -194,7 +198,17 @@ class IngestHandler(BaseHTTPRequestHandler):
 
         accepted, rejected = self.app.ingest(records)
         status = HTTPStatus.OK if accepted or not records else HTTPStatus.BAD_REQUEST
-        self._json(status, {"accepted": accepted, "rejected": rejected})
+        self._json(
+            status,
+            {
+                "accepted": accepted,
+                "rejected": rejected,
+                # Rides along so the phone learns about an expired Garmin login
+                # without spending a second request on it. Cached server-side,
+                # so this costs nothing.
+                "token_state": garmin_auth.token_state(self.app.config),
+            },
+        )
 
     # --- login --------------------------------------------------------------
 
@@ -287,13 +301,58 @@ class App:
     def health(self) -> dict:
         last = self.runlog.last_success()
         failures = self.runlog.consecutive_failures()
-        pending = len(self.inbox.pending())
         return {
             "ok": failures == 0,
             "last_success": last.isoformat() if last else None,
-            "pending": pending,
+            "pending": len(self.inbox.pending()),
             "token_state": garmin_auth.token_state(self.config),
             "consecutive_failures": failures,
+        }
+
+    def status(self) -> dict:
+        """Everything the app needs for a one-look view of the pipeline.
+
+        Timestamps stay UTC ISO here - the client renders them in its own
+        timezone, which is the only one that means anything to the person
+        holding the phone.
+        """
+        token = garmin_auth.token_state(self.config)
+        pending = self.inbox.pending()
+        runs = self.runlog.recent(40)
+        return {
+            "ok": self.runlog.consecutive_failures() == 0 and token == "valid",
+            "token_state": token,
+            # Handed over rather than assembled on the phone, so the app never
+            # has to guess how this service is addressed.
+            "login_url": f"{self.config.public_url.rstrip('/')}/login"
+            if self.config.public_url
+            else "/login",
+            "timezone": str(self.config.local_tz),
+            "last_success": (
+                self.runlog.last_success().isoformat()
+                if self.runlog.last_success() else None
+            ),
+            "consecutive_failures": self.runlog.consecutive_failures(),
+            "pending": [
+                {
+                    "taken_at": entry.reading.taken_at.isoformat(),
+                    "weight_kg": entry.reading.weight_kg,
+                    "received_at": entry.received_at.isoformat(),
+                }
+                for entry in pending
+            ],
+            "runs": [
+                {
+                    "at": r.at,
+                    "trigger": r.trigger,
+                    "uploaded": r.uploaded,
+                    "skipped": r.skipped,
+                    "failed": r.failed,
+                    "fetched": r.fetched,
+                    "error": r.error,
+                }
+                for r in reversed(runs)
+            ],
         }
 
     def _page(self, title: str, body: str) -> str:
@@ -310,6 +369,7 @@ class App:
             "table{border-collapse:collapse;width:100%}"
             "td,th{border-bottom:1px solid #ddd;padding:.4rem .6rem;text-align:left;"
             "font-variant-numeric:tabular-nums}"
+            ".ts{white-space:nowrap;font-variant-numeric:tabular-nums}"
             "label{display:block;margin:.8rem 0 .2rem}"
             "input{padding:.5rem;width:100%;max-width:22rem;border:1px solid #bbb;"
             "border-radius:4px}"
@@ -323,10 +383,11 @@ class App:
     def status_page(self) -> str:
         state = garmin_auth.token_state(self.config)
         pending = self.inbox.pending()
+        tz = self.config.local_tz
         rows = "".join(
-            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td>"
+            "<tr><td class=ts>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td>"
             "<td>{}</td></tr>".format(
-                html.escape(e.at),
+                html.escape(e.local_at(tz)),
                 html.escape(e.trigger),
                 e.uploaded,
                 e.skipped,
@@ -336,10 +397,11 @@ class App:
             for e in reversed(self.runlog.recent(25))
         )
         pending_rows = "".join(
-            "<tr><td>{}</td><td>{:.1f} kg</td><td>{}</td></tr>".format(
-                html.escape(p.reading.taken_at.isoformat()),
+            "<tr><td class=ts>{}</td><td>{:.1f} kg</td><td class=ts>{}</td></tr>"
+            .format(
+                html.escape(runlog_local(p.reading.taken_at, tz)),
                 p.reading.weight_kg,
-                html.escape(p.received_at.isoformat()),
+                html.escape(runlog_local(p.received_at, tz)),
             )
             for p in pending
         )

@@ -299,3 +299,44 @@ def test_successful_login_wakes_the_sync_loop(server, monkeypatch):
     assert status == 200
     assert b"Logged in" in body
     assert app.wake.is_set()
+
+
+def test_ingest_response_carries_token_state(server):
+    """The phone learns a login is needed without a second request."""
+    _, base = server
+    _, body = _post(f"{base}/weigh-ins", _payload(), _auth())
+
+    assert json.loads(body)["token_state"] == "valid"
+
+
+def test_status_endpoint_serves_the_app_dashboard(server, config):
+    _, base = server
+    _post(f"{base}/weigh-ins", _payload(), _auth())
+
+    status, body = _get(f"{base}/status")
+    parsed = json.loads(body)
+
+    assert status == 200
+    assert parsed["token_state"] == "valid"
+    assert parsed["timezone"] == "America/New_York"
+    assert parsed["login_url"].endswith("/login")
+    assert len(parsed["pending"]) == 1
+    assert parsed["pending"][0]["weight_kg"] == 82.1
+
+
+def test_status_page_renders_local_single_line_timestamps(server, config):
+    from garmin_stats_sync.runlog import RunEntry
+
+    _, base = server
+    RunLog(config.runlog_file).append(
+        RunEntry(
+            at="2026-08-31T12:03:31.873005+00:00",
+            trigger="interval",
+            uploaded=0, skipped=0, failed=0, fetched=0,
+        )
+    )
+    _, body = _get(f"{base}/")
+
+    # America/New_York is UTC-4 in August: 12:03 UTC -> 08:03 local.
+    assert b"2026-08-31 08:03:31" in body
+    assert b"12:03:31.873005" not in body

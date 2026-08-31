@@ -12,6 +12,7 @@ look correct and then fail in production:
 from __future__ import annotations
 
 import logging
+import pathlib
 
 import pytest
 
@@ -26,6 +27,11 @@ class FakeClient:
 
     def dump(self, path: str) -> None:
         self.dumped_to = path
+        # The real client writes a token file, and token_state reads the
+        # directory to decide "absent" - so the fake has to leave one too.
+        target = pathlib.Path(path)
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "garmin_tokens.json").write_text("{}")
 
 
 class FakeGarmin:
@@ -56,8 +62,10 @@ class FakeGarmin:
 def clean(monkeypatch):
     FakeGarmin.instances = []
     garmin_auth._sessions.clear()
+    garmin_auth.invalidate_token_state()
     yield
     garmin_auth._sessions.clear()
+    garmin_auth.invalidate_token_state()
 
 
 @pytest.fixture
@@ -184,3 +192,52 @@ def test_token_state_is_valid_when_login_succeeds(config, clean_client):
     (config.garth_dir / "oauth1_token.json").write_text("{}")
 
     assert garmin_auth.token_state(config) == "valid"
+
+
+def test_token_state_is_cached_so_health_checks_do_not_hit_garmin(config, clean_client):
+    """The container healthcheck polls /health every 60s; verifying costs two
+    Garmin API calls, so the answer must not be fetched afresh each time."""
+    config.garth_dir.mkdir(parents=True)
+    (config.garth_dir / "oauth1_token.json").write_text("{}")
+
+    for _ in range(5):
+        assert garmin_auth.token_state(config) == "valid"
+
+    assert len(FakeGarmin.instances) == 1
+
+
+def test_force_bypasses_the_cache(config, clean_client):
+    config.garth_dir.mkdir(parents=True)
+    (config.garth_dir / "oauth1_token.json").write_text("{}")
+
+    garmin_auth.token_state(config)
+    garmin_auth.token_state(config, force=True)
+
+    assert len(FakeGarmin.instances) == 2
+
+
+def test_expired_cache_is_refetched(config, clean_client):
+    from datetime import UTC, datetime, timedelta
+
+    config.garth_dir.mkdir(parents=True)
+    (config.garth_dir / "oauth1_token.json").write_text("{}")
+    garmin_auth.token_state(config)
+
+    stale = datetime.now(UTC) - garmin_auth.TOKEN_STATE_TTL - timedelta(seconds=1)
+    garmin_auth._token_cache = (stale, "valid")
+
+    garmin_auth.token_state(config)
+    assert len(FakeGarmin.instances) == 2
+
+
+def test_login_marks_the_state_valid_without_another_check(config, clean_client):
+    """After a login we know the answer; asking Garmin again is waste."""
+    garmin_auth.begin_login(config, "a@b.com", "secret")
+    before = len(FakeGarmin.instances)
+
+    assert garmin_auth.token_state(config) == "valid"
+    assert len(FakeGarmin.instances) == before
+
+
+def test_absent_tokenstore_needs_no_network_call(config):
+    assert garmin_auth.token_state(config) == "absent"

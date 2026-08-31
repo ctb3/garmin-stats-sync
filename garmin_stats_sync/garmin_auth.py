@@ -31,6 +31,11 @@ logger = logging.getLogger(__name__)
 SESSION_TTL = timedelta(minutes=10)
 MAX_SESSIONS = 4
 
+# Verifying tokens costs two Garmin API calls, and /health is polled by the
+# container healthcheck every 60s. Cache the answer so a healthy system does not
+# hammer Garmin for a value that changes about once a year.
+TOKEN_STATE_TTL = timedelta(minutes=15)
+
 TokenState = Literal["valid", "expired", "absent"]
 
 
@@ -57,23 +62,56 @@ class LoginSession:
 _sessions: dict[str, LoginSession] = {}
 _lock = threading.Lock()
 
+_token_cache: tuple[datetime, TokenState] | None = None
+_token_lock = threading.Lock()
+
+
+def invalidate_token_state(known: TokenState | None = None) -> None:
+    """Drop the cached answer, or replace it with one we just proved.
+
+    Called after a login (proved valid) and after an upload failure (suspect),
+    so the cache never masks a state change the user is waiting to see.
+    """
+    global _token_cache
+    with _token_lock:
+        _token_cache = (datetime.now(UTC), known) if known else None
+
 
 def _prune_sessions() -> None:
     for key in [k for k, v in _sessions.items() if v.expired]:
         _sessions.pop(key, None)
 
 
-def token_state(config) -> TokenState:
-    """Whether the stored Garmin tokens exist and still work."""
+def token_state(config, *, force: bool = False) -> TokenState:
+    """Whether the stored Garmin tokens exist and still work.
+
+    Cached for TOKEN_STATE_TTL: the check itself costs two Garmin API calls, and
+    the answer is stable for months at a time. Pass force=True to bypass.
+    """
+    global _token_cache
+
+    # Cheap and always accurate - no point caching or calling out for this.
     if not config.garth_dir.exists() or not any(config.garth_dir.iterdir()):
+        invalidate_token_state()
         return "absent"
+
+    if not force:
+        with _token_lock:
+            cached = _token_cache
+        if cached and datetime.now(UTC) - cached[0] < TOKEN_STATE_TTL:
+            return cached[1]
+
     try:
         client = _build_client(config)
         client.login(tokenstore=str(config.garth_dir))
+        state: TokenState = "valid"
     except Exception as exc:  # noqa: BLE001 - any failure means "log in again"
         logger.info("stored Garmin tokens are not usable: %s", exc)
-        return "expired"
-    return "valid"
+        state = "expired"
+
+    with _token_lock:
+        _token_cache = (datetime.now(UTC), state)
+    return state
 
 
 def _build_client(config, *, email: str = "", password: str = "", mfa: bool = False):
@@ -146,4 +184,5 @@ def _persist(config, garmin) -> None:
     """
     config.garth_dir.mkdir(parents=True, exist_ok=True)
     garmin.client.dump(str(config.garth_dir))
+    invalidate_token_state("valid")
     logger.info("garmin tokens stored in %s", config.garth_dir)
