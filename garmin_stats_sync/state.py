@@ -9,6 +9,10 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# Epoch seconds stay below this well past the year 5000; anything larger is a
+# millisecond value that leaked in from a source that reports them.
+_MILLISECOND_MAGNITUDE = 1e11
+
 
 @dataclass
 class State:
@@ -47,6 +51,15 @@ class State:
 
     def record(self, timestamp: int) -> None:
         """Mark a weigh-in as delivered. Only call after a successful upload."""
+        if timestamp > _MILLISECOND_MAGNITUDE:
+            # `default_since` calls datetime.fromtimestamp(last_timestamp), which
+            # raises on a millisecond value - and cmd_loop swallows the exception,
+            # so the container would log "sync cycle failed" forever while looking
+            # healthy. Fail loudly at the point the bad value enters instead.
+            raise ValueError(
+                f"timestamp {timestamp} looks like milliseconds; "
+                "source_timestamp must be epoch seconds"
+            )
         if timestamp not in self.synced:
             self.synced.append(timestamp)
         del self.synced[: -self.MAX_SYNCED]

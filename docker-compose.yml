@@ -6,27 +6,29 @@ services:
     env_file: .env
     volumes:
       - ./data:/data
+    # Reachable on the host's addresses, which is what a phone and an off-box
+    # reverse proxy both need. Set HOST_PORT only if 8080 is already taken; the
+    # listener inside the container is always 8080, so do not reuse INGEST_PORT
+    # here or changing it would move the listener out from under the mapping.
+    ports:
+      - "${HOST_PORT:-8080}:8080"
     restart: unless-stopped
+    # SIGTERM breaks the sync loop out of its wait, so shutdown is prompt and
+    # in-flight requests finish rather than being severed.
+    stop_grace_period: 15s
+    healthcheck:
+      # python, not curl: python:3.12-slim has no curl, and a healthcheck that
+      # always fails is worse than none.
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import sys, urllib.request
+          with urllib.request.urlopen("http://127.0.0.1:8080/health", timeout=3) as r:
+              sys.exit(0 if r.status == 200 else 1)
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     command: ["loop"]
-
-  # One-shot diagnostic: prints the raw VeSync reply for each endpoint variant.
-  #   docker compose run --rm diagnose
-  diagnose:
-    build: .
-    image: garmin-stats-sync:latest
-    env_file: .env
-    volumes:
-      - ./data:/data
-    profiles: ["tools"]
-    entrypoint: ["python", "/app/scripts/diagnose_weigh_endpoints.py"]
-
-  # Prints session values for exploring the API by hand (Insomnia/curl).
-  #   docker compose run --rm dump-session
-  dump-session:
-    build: .
-    image: garmin-stats-sync:latest
-    env_file: .env
-    volumes:
-      - ./data:/data
-    profiles: ["tools"]
-    entrypoint: ["python", "/app/scripts/dump_session.py"]

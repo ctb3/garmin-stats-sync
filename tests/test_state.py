@@ -57,3 +57,13 @@ def test_corrupt_state_file_falls_back_to_cold_start(tmp_path):
     path.write_text("{not json")
     state = State.load(path)
     assert state.last_timestamp is None
+
+
+def test_millisecond_timestamp_is_rejected(tmp_path):
+    """A ms value reaches default_since, where fromtimestamp raises - and
+    cmd_loop swallows that, so the service would fail silently forever."""
+    import pytest
+
+    state = State.load(tmp_path / "state.json")
+    with pytest.raises(ValueError, match="milliseconds"):
+        state.record(1_756_150_200_000)

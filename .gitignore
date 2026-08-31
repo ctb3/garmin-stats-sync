@@ -5,3 +5,10 @@ __pycache__/
 *.pyc
 .pytest_cache/
 *.egg-info/
+local.properties
+android/build/
+android/app/build/
+.gradle/
+android/.kotlin/
+android/keystore.jks
+android/keystore.properties

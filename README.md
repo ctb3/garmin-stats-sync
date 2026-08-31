@@ -6,39 +6,90 @@ Weight only — body fat, hydration and muscle mass are deliberately out of scop
 
 ## How it works
 
-The scale talks BLE to the phone, the VeSync app pushes readings to VeSync's
-cloud, and this service polls that cloud and re-posts new readings to Garmin.
+The scale talks BLE to the phone, the VeSync app writes the reading into Android
+Health Connect, a small Android app in this repo reads it from there and POSTs it to
+this service, and the service uploads it to Garmin Connect.
 
 ```
-scale --BLE--> VeSync app --> VeSync cloud --poll--> this service --> Garmin Connect
+scale --BLE--> VeSync app --> Health Connect
+                                   |
+              (Android app, WorkManager 30m, unmetered, battery-not-low)
+                                   |  POST /weigh-ins  + X-Auth-Token
+                                   v      https://garmin-sync.example.net
+                          reverse proxy (TLS)          
+                                   |
+                        receiver thread --> spool /data/inbox/*.json
+                                                     |
+                     sync loop --> upload --> Garmin Connect
 ```
 
-pyvesync never merged smart-scale support, so the library is used for login,
-token caching and region handling, while the device list and weigh-in history
-are raw calls through its authenticated session
-(`/cloud/v1/deviceManaged/devices` and `/cloud/v2/deviceManaged/getWeighingDataV2`,
-with `/cloud/v1/deviceManaged/fatScale/getWeighData` as a fallback for older
-scales). Garmin uploads go through `python-garminconnect`'s
-`add_weigh_in_with_timestamps`, authenticated by garth OAuth tokens that last
-about a year.
+### Why the data is pushed rather than pulled
 
-**One caveat that no server-side code can fix:** a reading only reaches VeSync's
-cloud after the phone app has pulled it off the scale over Bluetooth. If your
-scale holds readings until you open the VeSync app, that step stays manual.
-Everything after it is automatic.
+Health Connect has no cloud and no REST API. It is an on-device datastore reachable
+only from an Android app, so nothing server-side can read it. The phone has to push.
 
-## First-time setup
+This replaced an earlier design that polled VeSync's cloud directly. That never
+worked for this scale — a Bluetooth-only device appears in the device list but its
+measurements are not addressable through the device-scoped cloud API. The findings
+are written up in [`attic/vesync/`](attic/vesync/README.md).
 
-End to end, from an empty Proxmox cluster to weigh-ins landing in Garmin.
-Everything runs in one small unprivileged LXC.
+### Why Garmin upload stays on the server
+
+Garmin has no public API, and the unofficial route is now anti-bot-hardened.
+`garth` was deprecated in March 2026 when Garmin changed their auth flow;
+`garminconnect` 0.3.11 gets in by impersonating a real browser's TLS/JA3 fingerprint
+(`curl-cffi`) across several fallback strategies. Android's HTTP stacks present their
+own TLS fingerprint and cannot do that without bundling a native TLS build, so the
+app stays a dumb sender and the login stays here.
+
+### What this does not fix
+
+A reading only reaches Health Connect after the VeSync app has pulled it off the scale
+over Bluetooth. If your scale holds readings until you open the VeSync app, that step
+stays manual. Everything after it is automatic.
+
+## Reliability model
+
+- The phone advances its high-water mark **only after the server confirms a 2xx**. A
+  failed POST leaves it unmoved, so the next run re-reads the same records. Health
+  Connect is the queue; the app deliberately keeps no second copy that could diverge.
+- The phone reads **everything back to that mark** — no fixed window. On a first run
+  it sends the full history Health Connect still holds. **Sync now** ignores the mark
+  entirely, which is how you re-send after rebuilding the server.
+- The server dedupes by timestamp, so re-sending a reading it already has is free.
+- The server does not answer `200` until the reading is `fsync`'d to `/data/inbox/`.
+- A spooled reading is deleted only on **positive proof of delivery** — presence in
+  `state.json`'s `synced` list, which is written only after a successful Garmin upload.
+- So a weigh-in arriving while your Garmin token is expired is accepted, held, and
+  uploaded once you log in again. No re-POST from the phone is needed.
+
+## Deploying to Proxmox
+
+End to end, from an empty Proxmox host to weigh-ins landing in Garmin. Everything
+runs in one small unprivileged LXC.
 
 ### 1. Create the LXC
 
 Docker inside an unprivileged container needs the **nesting** and **keyctl**
-features.
+features. 1 core / 512 MB RAM / 8 GB disk is plenty.
 
-1 core / 512 MB RAM / 8 GB disk
+```bash
+# from the Proxmox host
+pct create 120 local:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst \
+  --hostname garmin-sync \
+  --cores 1 --memory 512 --rootfs local-lvm:8 \
+  --net0 name=eth0,bridge=vmbr0,ip=dhcp \
+  --features nesting=1,keyctl=1 \
+  --unprivileged 1 --onboot 1 --start 1
+pct enter 120
+```
 
+If the LXC already exists, set the features and restart it:
+
+```bash
+pct set 120 --features nesting=1,keyctl=1 --onboot 1
+pct reboot 120
+```
 
 ### 2. Install Docker in the container
 
@@ -62,8 +113,8 @@ Confirm the daemon actually works inside the LXC before going further:
 docker run --rm hello-world
 ```
 
-If that fails with an overlayfs error (common when the container's rootfs is on
-ZFS), install `fuse-overlayfs`, point Docker at it, and retry:
+If that fails with an overlayfs error (common when the LXC rootfs is on ZFS),
+switch Docker to fuse-overlayfs and retry:
 
 ```bash
 apt install -y fuse-overlayfs
@@ -79,11 +130,11 @@ git clone https://github.com/ctb3/garmin-stats-sync.git /opt/garmin-stats-sync
 cd /opt/garmin-stats-sync
 ```
 
-If the repo is private, either clone over SSH with a deploy key, or push the
-working copy straight from your workstation:
+If the repo is private, clone over SSH with a deploy key, or push the working
+copy straight from your workstation:
 
 ```bash
-rsync -av --exclude .venv --exclude data --exclude .env \
+rsync -av --exclude .venv --exclude data --exclude .env --exclude android/app/build \
   ./ root@<lxc-ip>:/opt/garmin-stats-sync/
 ```
 
@@ -91,63 +142,78 @@ rsync -av --exclude .venv --exclude data --exclude .env \
 
 ```bash
 cp .env.example .env
-nano .env          # VeSync + Garmin credentials, LOCAL_TZ
-chmod 600 .env     # it holds plaintext account passwords
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"   # INGEST_TOKEN
+nano .env
+chmod 600 .env
 mkdir -p data
 ```
 
-`LOCAL_TZ` decides which calendar day a weigh-in is recorded against — set it to
-your own timezone (`America/New_York`, `Europe/Berlin`, …), not UTC.
+Two things that matter:
 
-### 5. Build the image
+- **`INGEST_TOKEN`** — required, minimum 32 characters. The app sends it.
+- **`LOCAL_TZ`** — decides which calendar day a weigh-in is recorded against. Set
+  your own timezone (`America/New_York`, …), not UTC.
+
+Leave `GARMIN_EMAIL`/`GARMIN_PASSWORD` blank unless you want unattended
+re-login; the `/login` page covers it and stores no password.
+
+The service listens on port 8080, published on the host's addresses — so the
+phone and your reverse proxy can both reach it at `http://<lxc-ip>:8080` with no
+further configuration. Set `HOST_PORT` in `.env` only if 8080 is already taken.
+
+### 5. Build and start
 
 ```bash
 docker compose build
-```
-
-### 6. Bootstrap credentials (interactive, once)
-
-These two commands log in and cache tokens into `data/`, so the unattended loop
-never needs an interactive prompt. Run them from a real terminal — Garmin will
-ask for an MFA code if your account has 2FA enabled.
-
-```bash
-docker compose run --rm sync bootstrap-vesync
-docker compose run --rm sync bootstrap-garmin
-```
-
-### 7. Dry run before writing anything to Garmin
-
-```bash
-docker compose run --rm sync sync --since 7d --dry-run
-```
-
-Each line shows the converted weight and both timestamps. Check them against the
-VeSync app — right weights, right days — before continuing. If they are wrong,
-stop and run the probe (see [Development](#development)); the mapping constants
-live in `garmin_stats_sync/mapping.py`.
-
-### 8. Start it
-
-```bash
 docker compose up -d
 docker compose logs -f
 ```
 
-Confirm the first weigh-in appears in Garmin Connect under
-**Health Stats → Weight**, at the correct date and time.
+Expect `ingest listening on 0.0.0.0:8080` within a second or two.
 
-### 9. Confirm it survives a reboot
+### 6. Log in to Garmin
+
+```bash
+curl -s localhost:8080/health     # token_state should be "absent"
+```
+
+Open `http://<lxc-ip>:8080/login` in a browser and sign in. If your account uses
+MFA you get a second step for the code. Then confirm:
+
+```bash
+curl -s localhost:8080/health     # token_state should now be "valid"
+```
+
+### 7. Prove the pipeline before trusting it
+
+Post a weigh-in by hand — no phone needed:
+
+```bash
+TOKEN=$(grep ^INGEST_TOKEN= .env | cut -d= -f2-)
+curl -sS -X POST localhost:8080/weigh-ins \
+  -H "X-Auth-Token: $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"records\":[{\"metadata\":{\"id\":\"manual-1\"},
+       \"time\":$(($(date +%s)*1000)),\"weight\":{\"kilograms\":80.0}}]}"
+```
+
+Expect `{"accepted": 1, "rejected": []}`, then the upload in the logs within
+seconds. Check Garmin Connect under **Health Stats → Weight** for an 80.0 kg
+entry at today's date, and delete it there once you are satisfied.
+
+A `412 ... upload consent is not yet granted` here means Garmin has the account
+flagged EU-location — see [Troubleshooting](#troubleshooting).
+
+### 8. Confirm it survives a reboot
 
 ```bash
 reboot                      # inside the LXC
-docker compose ps           # after it comes back
+docker compose ps           # after it comes back, expect "healthy"
 ```
 
-The container restarts via `restart: unless-stopped`, and the LXC itself via
-`--onboot 1`. Nothing else to schedule — the loop does its own timing.
+The container restarts via `restart: unless-stopped`, the LXC via `--onboot 1`.
+Nothing to schedule — the loop does its own timing.
 
-### Day-to-day
+### Day to day
 
 ```bash
 docker compose logs -f                      # watch it work
@@ -155,100 +221,155 @@ docker compose restart                      # after editing .env
 git pull && docker compose up -d --build    # update
 ```
 
+## Reverse proxy (optional)
+
+Only worth it for a friendly hostname and TLS. A plain pass-through is all it
+needs, pointed at the LXC:
+
+```nginx
+server {
+    server_name garmin-sync.example.net;
+    # Public-CA certificate (e.g. Let's Encrypt DNS-01) so the phone's system
+    # trust store covers it - no custom trust anchor, no cleartext exception.
+
+    location / {
+        proxy_pass http://192.168.1.25:8080;   # the LXC running the container
+    }
+}
+```
+
+**What this leaves open.** With no auth at the proxy, anything on your network can
+read the status page — which shows your weigh-in history — and see the login form.
+On a home LAN that is usually a fine trade for not maintaining an htpasswd file.
+
+`INGEST_TOKEN` is then the only credential in the system, and it guards the one
+thing with consequences outside your network: writes to your Garmin account.
+Without it, any device on the LAN could inject weigh-ins into your history.
+
+If you later want the pages protected too, add Basic auth on `location /` and give
+`/weigh-ins` its own `location` block without it — the app authenticates with the
+token, not with Basic auth.
+
+Worth knowing either way: Docker's iptables `DOCKER` chain DNATs *before*
+`ufw`/`firewalld`, so a host firewall you believe is blocking 8080 will not
+block it. Keep the LXC off untrusted networks rather than relying on that.
+
+## The Android app
+
+Reads `WeightRecord` from Health Connect and posts it here. Built by
+[CI](.github/workflows/android.yml) as `garmin-sync-debug.apk` — download it from
+the run artifacts and sideload it; there is no Play listing, so no Health Connect
+declaration form and no privacy policy.
+
+On first run it opens **Settings** and asks for the server address and the
+`INGEST_TOKEN`. Both live behind that dialog afterwards rather than on the main
+screen — they are set once, and a live text box is only a way to break a working
+install by mistyping into it.
+
+The main screen is a dashboard for the whole pipeline, pulled from `/status`:
+
+- whether everything is up to date, waiting, or needs attention
+- the Garmin token state, with a **Log in to Garmin** button that opens the
+  server's login page in a browser when one is needed
+- weigh-ins the server has accepted but not yet delivered
+- a run log mirroring the container's status page
+
+Everything renders in the phone's timezone as `yyyy-MM-dd HH:mm`. Notifications
+open the dashboard, so the login button is one tap away from the notification.
+
+Grant only **Weight** when Health Connect asks, plus background access and history.
+The app requests nothing else — history is what stops Health Connect capping reads
+at the last 30 days, which would silently truncate a first sync.
+
+`COLD_START_DAYS` on the server decides how much of a backfill actually reaches
+Garmin: on a cold start it only accepts weigh-ins from the last N days (7 by
+default) and drops the rest from the spool with a note in the log. Raise it before
+the first sync if you want the whole history.
+
+## Endpoints
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| `POST` | `/weigh-ins` | `X-Auth-Token` header | Ingest from the phone |
+| `GET` | `/` | whatever the proxy enforces | Status: recent runs, pending spool, token state |
+| `GET`/`POST` | `/login` | whatever the proxy enforces | Garmin login and MFA |
+| `GET`/`HEAD` | `/health` | none | JSON for external monitoring |
+| `GET` | `/status` | none | Full pipeline state as JSON, for the app |
+
+The token is accepted **only** as a header — never a query string or cookie — so a
+browser page cannot drive the endpoint without a preflight this service never answers.
+
+`/health` is what alerts you to an expired Garmin token:
+
+```json
+{"ok": true, "last_success": "...", "pending": 0,
+ "token_state": "valid", "consecutive_failures": 0}
+```
+
+Point an uptime monitor at it and alert on `token_state != "valid"`, a rising
+`pending`, or a stale `last_success`. The app raises a phone notification for the one
+failure this cannot see — the server being unreachable.
+
+`token_state` is verified against Garmin at most once every 15 minutes and cached,
+because the check costs two API calls and the answer changes about once a year.
+A successful login updates it immediately, so the status page never lags behind
+what you just did.
+
+`/status` is the richer version the app polls: token state, the weigh-ins accepted
+but not yet delivered, recent runs, the server's timezone, and the login URL. It
+hands over the login URL rather than letting the app assemble one, so the app never
+has to know how this service is addressed.
+
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `sync` | One pass: fetch, upload new weigh-ins, exit |
-| `loop` | `sync` every `SYNC_INTERVAL_SECONDS` (container default) |
-| `bootstrap-vesync` | Log in and cache VeSync credentials |
-| `bootstrap-garmin` | Log in (with MFA prompt) and cache Garmin OAuth tokens |
+| `loop` | Run the listener and the sync loop. The container default. |
+| `sync` | One cycle against whatever is already spooled. |
+| `bootstrap-garmin` | Log in from the terminal, if you prefer that to `/login`. |
 
-Flags: `--since 7d|12h|YYYY-MM-DD|all`, `--dry-run`, `--verbose`.
+Flags: `--since 7d|12h|YYYY-MM-DD|all`, `--dry-run`, `-v`.
 
 ## State
 
-Everything mutable lives in the `/data` volume:
-
 | Path | Contents |
 |---|---|
-| `/data/garth/` | Garmin OAuth tokens |
-| `/data/vesync.json` | VeSync token and account id |
-| `/data/state.json` | Dedup record of synced weigh-ins |
+| `/data/garth/` | Garmin OAuth tokens (~1 year) |
+| `/data/inbox/` | Weigh-ins received but not yet confirmed to Garmin |
+| `/data/state.json` | Which weigh-ins have been delivered |
+| `/data/runlog.jsonl` | Recent runs, shown on the status page |
 
-Delete `state.json` to re-sync from scratch (`--since` controls how far back).
+Delete `state.json` to re-sync from scratch.
 
-If Garmin tokens expire you'll see `GARMIN REAUTH REQUIRED` in the logs; rerun
-`bootstrap-garmin`.
+## Power
+
+The phone polls every 30 minutes, constrained to unmetered networks and
+battery-not-low, with a flex window so `JobScheduler` batches it into a wake it was
+already making. A run with nothing new returns before touching the network, which is
+almost every run — so the cost is a process wake and one Health Connect IPC read, not
+a connection. Android 15+ background reads are what let the app avoid a foreground
+service entirely; that, not the interval, is the thing that would have cost battery.
+
+An arriving weigh-in also wakes the server's sync loop immediately, so end-to-end
+latency is bounded by the phone's interval rather than the server's.
 
 ## Troubleshooting
 
-### Exploring the API by hand
+**Weigh-ins are not arriving.** Check `/health` for `pending`. If it is rising, the
+phone is delivering and Garmin is not — check `token_state`. If it stays zero, the
+phone is not delivering: open the app and read its last result.
 
-`docs/vesync-api.md` documents every endpoint, header and body this project
-uses, the login flow, the error codes seen, and everything already tried for
-weigh-in retrieval.
+**`token_state` is `expired`.** Visit `/login`. Anything held in the spool uploads on
+the next cycle.
 
-To poke at it yourself:
+**The app reports 401.** The `INGEST_TOKEN` in `.env` and in the app disagree, or the
+proxy is stripping the `X-Auth-Token` header.
 
-```bash
-docker compose run --rm dump-session   # prints token, accountId, uuid, configModule
-```
+**`API Error 412 - The user is from EU location, but upload consent is not yet
+granted or revoked`.** Garmin has the account flagged as EU-location and refuses
+uploads until data-upload consent is granted in Garmin Connect's account/privacy
+settings. Nothing here can grant it for you. The reading stays in the spool and
+uploads once consent is given. New accounts commonly land in this state.
 
-Import `insomnia/vesync-scale.json` into Insomnia, paste those values into the
-Base environment, and the auth, device-list and weigh-in requests are ready to
-run. The session token is a live credential - keep it out of issues and chats.
-
-### VeSync returns an error instead of weigh-ins
-
-Run the endpoint search and read the codes:
-
-```bash
-docker compose run --rm diagnose
-```
-
-VeSync's codes tell you which wall you hit:
-
-| Code | Meaning |
-|---|---|
-| `0` | success |
-| `-11000079` | illegal argument — the endpoint exists, the body is wrong |
-| `-11105079` | MySQL error — the server-side query failed, usually the wrong endpoint for this device class |
-| `-11102000` | token expired — delete `data/vesync.json` and re-run `bootstrap-vesync` |
-
-BT-only scales (`"connectionType": "BT"`, `"cid": null`) do not answer the same
-endpoints as WiFi devices, and no public VeSync client implements weigh-in
-retrieval for them, so the request shape has to be discovered.
-
-If no variant returns `code=0`, capture what the VeSync app itself sends:
-
-1. Install [mitmproxy](https://mitmproxy.org/) on a machine on your LAN and run `mitmweb`.
-2. On the phone, set that machine as the Wi-Fi HTTP proxy (port 8080) and
-   install the mitm CA certificate from `http://mitm.it`.
-3. Open the VeSync app and view the scale's weight history.
-4. Filter for `smartapi.vesync.com` and find the request whose response
-   contains your weights.
-5. The endpoint path and request body from that flow are the answer — the
-   matching constants live in `garmin_stats_sync/vesync_client.py`.
-
-### Garmin login returns 429
-
-`GarminConnectTooManyRequestsError: IP rate limited` during `bootstrap-garmin`
-is garth retrying; it usually succeeds on the next attempt. Space out repeated
-bootstraps rather than looping them.
-
-### `GARMIN REAUTH REQUIRED` in the logs
-
-The stored OAuth tokens expired (roughly yearly, or after a password change).
-Re-run `docker compose run --rm sync bootstrap-garmin`.
-
-## Development
-
-```bash
-uv sync --extra dev
-uv run pytest
-uv run python scripts/probe_vesync.py              # dump raw VeSync responses
-uv run python scripts/diagnose_weigh_endpoints.py  # search for the weigh-in endpoint
-```
-
-Tests are offline and run against recorded payloads in `tests/fixtures/`.
+**Nothing in Health Connect.** Open the VeSync app so it pulls the reading off the
+scale over Bluetooth. Nothing downstream can do this for you.

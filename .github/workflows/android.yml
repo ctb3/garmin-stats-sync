@@ -1,0 +1,79 @@
+name: Android APK
+
+# There is no local Android toolchain, by design: the APK is built here and
+# sideloaded. Sideloading also means no Play listing, so no Health Connect
+# declaration form and no privacy policy.
+on:
+  push:
+    paths:
+      - "android/**"
+      - ".github/workflows/android.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # No wrapper is committed (there is no local toolchain to generate one),
+      # so pin the Gradle version explicitly here.
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      # Unit tests first: they cover the wire contract with the server and run
+      # on a plain JVM, so a mismatch fails here rather than on a phone.
+      - name: Unit tests
+        working-directory: android
+        run: gradle testDebugUnitTest --no-daemon --stacktrace
+
+      # Absent the secrets (a fork, or before they are configured) this writes
+      # nothing and the release build below falls back to unsigned, which the
+      # upload step then fails on - loudly, rather than shipping an APK that
+      # cannot be installed.
+      - name: Restore signing keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > android/keystore.jks
+            echo "keystore restored ($(stat -c%s android/keystore.jks) bytes)"
+          else
+            echo "::error::KEYSTORE_BASE64 secret is not set"
+            exit 1
+          fi
+
+      - name: Build release APK
+        working-directory: android
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          VERSION_CODE: ${{ github.run_number }}
+        run: gradle assembleRelease --no-daemon --stacktrace
+
+      - name: Verify the APK is signed and not debuggable
+        run: |
+          APK=android/app/build/outputs/apk/release/garmin-sync-release.apk
+          "$ANDROID_HOME"/build-tools/35.0.0/apksigner verify --print-certs "$APK"
+          if "$ANDROID_HOME"/build-tools/35.0.0/aapt2 dump badging "$APK" \
+               | grep -q application-debuggable; then
+            echo "::error::release APK is debuggable"; exit 1
+          fi
+
+      - name: Upload test report on failure
+        if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          name: unit-test-report
+          path: android/app/build/reports/tests/
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: garmin-sync-apk
+          path: android/app/build/outputs/apk/release/garmin-sync-release.apk
+          if-no-files-found: error

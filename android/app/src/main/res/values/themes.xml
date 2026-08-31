@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      NoActionBar: the activity draws its own title. targetSdk 35+ forces
+      edge-to-edge, and letting a system ActionBar and a hand-built layout both
+      guess at insets is how content ends up underneath the status bar.
+    -->
+    <style name="Theme.GarminSync" parent="Theme.AppCompat.DayNight.NoActionBar" />
+</resources>
